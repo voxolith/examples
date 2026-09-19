@@ -3,7 +3,7 @@
 // a first-person camera. No region file is bundled; grab one from any world's
 // `region/` folder.
 
-import { createRenderer, OccupancyGrid, buildMinecraftRegion, firstPersonFrame, resizeToDisplay, type Renderer } from "@voxolith/render";
+import { createRenderer, OccupancyGrid, buildMinecraftRegion, firstPersonFrame, resizeToDisplay, type Renderer } from "@voxolith/renderer";
 import { boot, runLoop } from "../shared/boot";
 import { DAYLIGHT } from "../shared/env";
 

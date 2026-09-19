@@ -2,7 +2,7 @@
 // MagicaVoxel is Z-up; the engine is Y-up, so (x, y, z) becomes (x, z, y).
 // The model is cropped to its occupied box so it frames nicely.
 
-import type { VoxModel } from "@voxolith/render";
+import type { VoxModel } from "@voxolith/renderer";
 
 export interface Grid {
   size: { x: number; y: number; z: number };

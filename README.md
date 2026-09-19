@@ -1,6 +1,6 @@
 # Voxolith examples
 
-Minimal, runnable pages for [`@voxolith/render`](https://github.com/voxolith/render), the WebGPU
+Minimal, runnable pages for [`@voxolith/renderer`](https://github.com/voxolith/renderer), the WebGPU
 voxel raymarching engine. Each example is one `main.ts` with comments; the shared helpers in
 `src/shared/` are tiny and meant to be copied.
 
@@ -31,7 +31,7 @@ example from the landing page. The `minecraft-region` page needs a region file; 
 
 ## Local development with the engine
 
-This repo depends on `@voxolith/render` as `workspace:*`. Clone it next to this one and run
+This repo depends on `@voxolith/renderer` as `workspace:*`. Clone it next to this one and run
 `bun install` from a workspace root that lists both folders. Once the engine is on npm, swap the
 dependency to a version range.
 

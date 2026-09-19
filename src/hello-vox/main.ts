@@ -1,8 +1,8 @@
-// hello-vox: the smallest useful @voxolith/render program.
+// hello-vox: the smallest useful @voxolith/renderer program.
 // Fetch a .vox → dense grid → renderer + occupancy grid → render each frame
 // with a slowly rotating orbit camera.
 
-import { createRenderer, OccupancyGrid, makeCamera, parseVox, resizeToDisplay } from "@voxolith/render";
+import { createRenderer, OccupancyGrid, makeCamera, parseVox, resizeToDisplay } from "@voxolith/renderer";
 import { boot, runLoop } from "../shared/boot";
 import { STUDIO } from "../shared/env";
 import { modelToGrid, frameGrid } from "../shared/voxGrid";

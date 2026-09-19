@@ -1,7 +1,7 @@
 // Lighting and sky values shared by the examples. FrameParams needs all of
 // these on every frame; spread them after the camera fields.
 
-import type { Vec3 } from "@voxolith/render";
+import type { Vec3 } from "@voxolith/renderer";
 
 const norm = (v: Vec3): Vec3 => {
   const l = Math.hypot(v[0], v[1], v[2]) || 1;

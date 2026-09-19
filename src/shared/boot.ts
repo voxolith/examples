@@ -1,7 +1,7 @@
 // Shared startup: grab the canvas, init WebGPU, and show the engine's
 // "unsupported" card instead of a blank page when navigator.gpu is missing.
 
-import { initGpu, showUnsupportedScreen, WebGPUUnsupportedError, type GpuContext } from "@voxolith/render";
+import { initGpu, showUnsupportedScreen, WebGPUUnsupportedError, type GpuContext } from "@voxolith/renderer";
 import "./styles.css";
 
 export interface Booted {

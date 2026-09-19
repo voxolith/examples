@@ -1,7 +1,7 @@
 // orbit: a procedural terrain grid written directly into the voxel array,
 // the engine's drag-to-yaw orbit control, and wheel zoom.
 
-import { createRenderer, OccupancyGrid, makeCamera, makeOrbitControl, resizeToDisplay } from "@voxolith/render";
+import { createRenderer, OccupancyGrid, makeCamera, makeOrbitControl, resizeToDisplay } from "@voxolith/renderer";
 import { boot, runLoop } from "../shared/boot";
 import { DAYLIGHT } from "../shared/env";
 

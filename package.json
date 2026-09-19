@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Minimal runnable examples for @voxolith/render (WebGPU voxel raymarching)",
+  "description": "Minimal runnable examples for @voxolith/renderer (WebGPU voxel raymarching)",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -16,7 +16,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@voxolith/render": "workspace:*"
+    "@voxolith/renderer": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^26.6.2",
