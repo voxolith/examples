@@ -1,7 +1,14 @@
 // Shared startup: grab the canvas, init WebGPU, and show the engine's
 // "unsupported" card instead of a blank page when navigator.gpu is missing.
 
-import { initGpu, showUnsupportedScreen, WebGPUUnsupportedError, type GpuContext } from "@voxolith/renderer";
+import {
+  initGpu,
+  makeFrameLoop,
+  showUnsupportedScreen,
+  WebGPUUnsupportedError,
+  type FrameLoop,
+  type GpuContext,
+} from "@voxolith/renderer";
 import "./styles.css";
 import { initTheme } from "../brand/theme";
 
@@ -30,15 +37,11 @@ export async function boot(appName: string): Promise<Booted | null> {
   }
 }
 
-/** requestAnimationFrame loop capped at ~60 Hz; `dt` is seconds. */
-export function runLoop(frame: (now: number, dt: number) => void): void {
-  let last = performance.now();
-  const tick = (now: number) => {
-    requestAnimationFrame(tick);
-    const ms = now - last;
-    if (ms < 1000 / 60 - 1) return;
-    last = now;
-    frame(now, Math.min(0.05, ms / 1000));
-  };
-  requestAnimationFrame(tick);
+/**
+ * Frame loop built on the engine's render-on-demand loop. `continuous: true`
+ * (the default here) renders every frame, for examples that animate; pass
+ * `false` and call `loop.invalidate()` when something changes instead.
+ */
+export function runLoop(frame: (now: number, dt: number) => void, continuous = true): FrameLoop {
+  return makeFrameLoop({ render: frame, continuous });
 }
