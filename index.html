@@ -3,19 +3,32 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Voxolith examples</title>
-    <link rel="stylesheet" href="/src/shared/styles.css" />
+    <title>Voxolith Examples</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#151B29" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#F6F4EE" />
+    <script>try{var t=localStorage.getItem("voxolith-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
   </head>
   <body class="page">
     <main>
-      <h1>@voxolith/renderer examples</h1>
-      <p>Small, self-contained pages showing the engine API. Each one is a single <code>main.ts</code>.</p>
+      <header class="landing-header">
+        <picture class="lockup">
+          <source srcset="/brand/lockup-dark.svg" media="(prefers-color-scheme: dark)" class="lockup-dark" />
+          <img src="/brand/lockup.svg" alt="Voxolith — WebGPU voxel engine" width="420" />
+        </picture>
+        <button class="theme-toggle" id="theme-toggle" type="button"></button>
+      </header>
+      <h1>Examples</h1>
+      <p>Small, self-contained pages showing the <code>@voxolith/renderer</code> API. Each one is a single <code>main.ts</code>.</p>
       <ol>
         <li><a href="./hello-vox/">hello-vox</a> — load a .vox, build the occupancy grid, render with an auto-rotating camera</li>
         <li><a href="./orbit/">orbit</a> — procedural terrain, drag to orbit, wheel to zoom, floor plane</li>
         <li><a href="./minecraft-region/">minecraft-region</a> — drop a Minecraft .mca region and walk through it first-person</li>
       </ol>
-      <p class="muted">Needs a WebGPU browser and a secure context (this dev server is HTTPS).</p>
+      <p class="muted">Needs a WebGPU browser and a secure context. Source: <a href="https://github.com/voxolith/examples">github.com/voxolith/examples</a>.</p>
     </main>
+    <script type="module" src="/src/landing.ts"></script>
   </body>
 </html>

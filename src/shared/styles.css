@@ -1,29 +1,63 @@
+@import "../brand/tokens.css";
+
 * { box-sizing: border-box; }
 html, body {
-  margin: 0; height: 100%; background: #16181d; overflow: hidden;
-  font: 13px/1.45 system-ui, sans-serif; color: #d7dae0;
+  margin: 0; height: 100%; background: var(--bg); overflow: hidden;
+  font: 13px/1.45 system-ui, sans-serif; color: var(--text);
 }
 #app { position: fixed; inset: 0; }
 #scene { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 #hud { position: absolute; inset: 0; pointer-events: none; }
 #hud .panel {
   pointer-events: auto; position: absolute; top: 12px; left: 12px; display: flex; gap: 10px; align-items: center;
-  background: rgba(28, 31, 38, 0.92); border: 1px solid #2e323b; border-radius: 10px; padding: 8px 10px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px;
+  box-shadow: var(--shadow);
 }
-#hud a { color: #8fa6ff; text-decoration: none; }
-#hud #info { color: #9aa0ab; }
-.drop #app { outline: 3px dashed #5b76ff; outline-offset: -8px; }
+#hud a { color: var(--link); text-decoration: none; }
+#hud #info { color: var(--text-muted); }
+.drop #app { outline: 3px dashed var(--drop); outline-offset: -8px; }
 
 /* Landing page */
 body.page { overflow: auto; }
 body.page main { max-width: 720px; margin: 48px auto; padding: 0 16px; }
-body.page a { color: #8fa6ff; }
+body.page a { color: var(--link); }
 body.page li { margin: 8px 0; }
-body.page .muted { color: #8b909b; }
-body.page code { background: #2b2f38; padding: 1px 5px; border-radius: 4px; }
+body.page .muted { color: var(--text-muted); }
+body.page code { background: var(--control); padding: 1px 5px; border-radius: 4px; }
 
 /* Rendered by showUnsupportedScreen() */
-.unsupported { position: fixed; inset: 0; display: grid; place-items: center; background: #16181d; color: #d7dae0; }
+.unsupported { position: fixed; inset: 0; display: grid; place-items: center; background: var(--bg); color: var(--text); }
 .unsupported-card { text-align: center; max-width: 320px; padding: 24px; }
 .unsupported-emoji { font-size: 48px; }
+
+/* Brand icon on the unsupported-browser card */
+.unsupported-icon img,
+.unsupported-icon svg {
+  width: 72px;
+  height: 72px;
+}
+.unsupported h1 {
+  color: var(--text);
+}
+.unsupported-hint {
+  color: var(--text-muted);
+}
+
+/* Landing page header */
+.landing-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.landing-header .lockup img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+body.page h1 {
+  color: var(--text);
+  font-size: 22px;
+  margin: 0 0 8px;
+}

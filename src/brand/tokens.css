@@ -1,0 +1,112 @@
+/* GENERATED from voxolith/branding/web/tokens.css — do not edit here; run `bun scripts/sync.ts` in branding. */
+/* Voxolith design tokens. Source of truth: voxolith/branding/web/tokens.css.
+   Dark navy is the default; the light "paper" theme applies via
+   prefers-color-scheme or html[data-theme="light"]. */
+
+:root {
+  /* Brand constants (never themed) */
+  --brand-orange-300: #F7A24A;
+  --brand-orange-500: #EA7530;
+  --brand-orange-700: #C9501B;
+  --brand-paper: #F6F4EE;
+  --brand-navy: #2E3A54;
+
+  /* Dark theme (default) */
+  --bg: #151B29;
+  --surface: rgba(30, 40, 62, 0.92);
+  --surface-solid: #1E283E;
+  --border: #3A4761;
+  --control: #2A3550;
+  --control-hover: #344263;
+  --text: #F6F4EE;
+  --text-muted: #A7B0C4;
+  --text-faint: #6F7A93;
+  --accent: #EA7530;
+  --accent-hover: #F7A24A;
+  --on-accent: #1E283E;
+  --link: #F7A24A;
+  --drop: #F7A24A;
+  --danger: #FF8D8D;
+  --shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #F6F4EE;
+    --surface: rgba(255, 255, 255, 0.92);
+    --surface-solid: #FFFFFF;
+    --border: #DDD6C8;
+    --control: #EFEBE2;
+    --control-hover: #E6E0D3;
+    --text: #2E3A54;
+    --text-muted: #5B6680;
+    --text-faint: #8A93A8;
+    --accent: #EA7530;
+    --accent-hover: #C9501B;
+    --on-accent: #F6F4EE;
+    --link: #C9501B;
+    --drop: #C9501B;
+    --danger: #C2413A;
+    --shadow: 0 6px 18px rgba(46, 58, 84, 0.16);
+    color-scheme: light;
+  }
+}
+
+:root[data-theme="light"] {
+  --bg: #F6F4EE;
+  --surface: rgba(255, 255, 255, 0.92);
+  --surface-solid: #FFFFFF;
+  --border: #DDD6C8;
+  --control: #EFEBE2;
+  --control-hover: #E6E0D3;
+  --text: #2E3A54;
+  --text-muted: #5B6680;
+  --text-faint: #8A93A8;
+  --accent: #EA7530;
+  --accent-hover: #C9501B;
+  --on-accent: #F6F4EE;
+  --link: #C9501B;
+  --drop: #C9501B;
+  --danger: #C2413A;
+  --shadow: 0 6px 18px rgba(46, 58, 84, 0.16);
+  color-scheme: light;
+}
+
+/* Shared brand components used by every app toolbar. */
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  margin-right: 4px;
+}
+.brand img,
+.brand svg {
+  width: 22px;
+  height: 22px;
+  display: block;
+}
+.brand small {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+.theme-toggle {
+  background: var(--control);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.theme-toggle:hover {
+  background: var(--control-hover);
+}

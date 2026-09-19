@@ -3,6 +3,9 @@
 
 import { initGpu, showUnsupportedScreen, WebGPUUnsupportedError, type GpuContext } from "@voxolith/renderer";
 import "./styles.css";
+import { initTheme } from "../brand/theme";
+
+const MARK = `<img src="${import.meta.env.BASE_URL}brand/logo-mark.svg" alt="" width="72" height="72">`;
 
 export interface Booted {
   gpu: GpuContext;
@@ -14,12 +17,13 @@ export async function boot(appName: string): Promise<Booted | null> {
   const canvas = document.getElementById("scene") as HTMLCanvasElement | null;
   const info = document.getElementById("info");
   if (!canvas || !info) throw new Error("Missing #scene / #info");
+  initTheme(document.getElementById("theme-toggle"));
   try {
     const gpu = await initGpu(canvas);
     return { gpu, canvas, info };
   } catch (err) {
     if (err instanceof WebGPUUnsupportedError) {
-      showUnsupportedScreen(err.message, { appName, emoji: "🧊" });
+      showUnsupportedScreen(err.message, { appName, iconHtml: MARK });
       return null;
     }
     throw err;
