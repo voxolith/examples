@@ -35,6 +35,13 @@ This repo depends on `@voxolith/renderer` as `workspace:*`. Clone it next to thi
 `bun install` from a workspace root that lists both folders. Once the engine is on npm, swap the
 dependency to a version range.
 
+## Deploy
+
+Every push to `main` builds the app and publishes it to GitHub Pages at
+<https://voxolith.github.io/examples/> via `.github/workflows/pages.yml`. The workflow checks out
+`voxolith/renderer` next to the app and builds with `BASE_PATH=/examples/`, so asset and fetch URLs
+resolve under the project path. Run the same locally with `BASE_PATH=/examples/ bun run build`.
+
 ## License
 
 MIT

@@ -5,6 +5,8 @@ import basicSsl from "@vitejs/plugin-basic-ssl";
 const page = (p: string) => fileURLToPath(new URL(p, import.meta.url));
 
 export default defineConfig({
+  // GitHub Pages serves project sites under /<repo>/; the deploy workflow sets BASE_PATH.
+  base: process.env.BASE_PATH ?? "/",
   // WebGPU needs a secure context; basic-ssl serves HTTPS on localhost + LAN.
   plugins: [basicSsl()],
   // @voxolith/renderer ships raw TypeScript with `?raw` shader imports; it must be

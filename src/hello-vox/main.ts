@@ -12,7 +12,7 @@ if (app) {
   const { gpu, info } = app;
 
   // 1. Load and convert the model.
-  const model = parseVox(await (await fetch("/models/cat-sit.vox")).arrayBuffer());
+  const model = parseVox(await (await fetch(`${import.meta.env.BASE_URL}models/cat-sit.vox`)).arrayBuffer());
   const grid = modelToGrid(model);
 
   // 2. Create the renderer for this grid and give it the coarse occupancy
