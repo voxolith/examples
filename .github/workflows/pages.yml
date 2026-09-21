@@ -1,9 +1,9 @@
 name: Deploy to GitHub Pages
 
 # Builds the app and publishes dist/ to GitHub Pages on every push to main.
-# The app depends on @voxolith/renderer as "workspace:*", so the renderer repo
-# is checked out next to it and both are installed from a temporary bun
-# workspace root. Once the renderer is on npm this can shrink to a plain
+# The app depends on the engine, the generators and the renderer as
+# "workspace:*", so each is checked out next to it and they are installed from a
+# temporary bun workspace root. Once those are on npm this can shrink to a plain
 # checkout + bun install.
 
 on:
@@ -31,13 +31,29 @@ jobs:
         with:
           repository: voxolith/renderer
           path: renderer
+      - uses: actions/checkout@v4
+        with:
+          repository: voxolith/engine
+          path: engine
+      - uses: actions/checkout@v4
+        with:
+          repository: voxolith/gen-tree
+          path: gen-tree
+      - uses: actions/checkout@v4
+        with:
+          repository: voxolith/gen-bush
+          path: gen-bush
+      - uses: actions/checkout@v4
+        with:
+          repository: voxolith/gen-grass
+          path: gen-grass
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
       - name: Create workspace root
         run: |
           cat > package.json <<'JSON'
-          { "name": "pages-workspace", "private": true, "workspaces": ["app", "renderer"] }
+          { "name": "pages-workspace", "private": true, "workspaces": ["app", "renderer", "engine", "gen-tree", "gen-bush", "gen-grass"] }
           JSON
       - run: bun install
       - name: Build

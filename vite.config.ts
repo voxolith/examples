@@ -20,6 +20,7 @@ export default defineConfig({
         "hello-vox": page("hello-vox/index.html"),
         orbit: page("orbit/index.html"),
         "minecraft-region": page("minecraft-region/index.html"),
+        forest: page("forest/index.html"),
       },
     },
   },
