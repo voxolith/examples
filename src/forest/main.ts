@@ -23,12 +23,12 @@ import {
 } from "@voxolith/renderer";
 import { seededRandom, hashSeed } from "@voxolith/renderer/core";
 import {
-  blitModelToBricks,
+  makeChunkedWorld,
   makeVariantPool,
+  scatterRegion,
   PaletteAllocator,
   voxelCount,
   type Entity,
-  type Orientation,
   type Role,
   type VariantPool,
 } from "@voxolith/engine";
@@ -47,7 +47,6 @@ import { DAYLIGHT } from "../shared/env";
 const params = new URLSearchParams(location.search);
 const SPAN = Math.max(1, Math.min(8, Math.round(Number(params.get("scale") ?? 4))));
 const TILE = 320;
-const AREA = SPAN * SPAN;
 const SIZE = { x: TILE * SPAN, y: 176, z: TILE * SPAN };
 
 const seed = hashSeed(params.get("seed") ?? "voxolith");
@@ -57,16 +56,10 @@ const season = (params.get("season") ?? "summer") as "spring" | "summer" | "autu
 const TREE_KINDS = ["oak", "birch", "spruce"] as const;
 const BUSH_KINDS = ["bush", "bramble"] as const;
 const GRASS_KINDS = ["grass", "meadow", "fern"] as const;
-const COUNTS = {
-  trees: Number(params.get("trees") ?? 14 * AREA),
-  bushes: Number(params.get("bushes") ?? 22 * AREA),
-  grass: Number(params.get("grass") ?? 34 * AREA),
-};
 
 const app = await boot("forest");
 if (app) {
   const { gpu, canvas, info } = app;
-  const rng = seededRandom(seed);
   const noise = makeNoise(seed);
 
   // --- ground ---------------------------------------------------------------
@@ -100,27 +93,6 @@ if (app) {
 
   const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette() });
 
-  // Fill the terrain brick by brick. Only the bricks in the height band are
-  // visited, and within each only the columns that actually have ground.
-  renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: maxH, z1: SIZE.z - 1 }, (cells, ox, oy, oz) => {
-    let touched = false;
-    for (let lz = 0; lz < 8; lz++) {
-      const wz = oz + lz;
-      if (wz >= SIZE.z) break;
-      for (let lx = 0; lx < 8; lx++) {
-        const wx = ox + lx;
-        if (wx >= SIZE.x) break;
-        const h = height[wx + wz * SIZE.x];
-        const top = Math.min(h, oy + 7);
-        for (let wy = oy; wy <= top; wy++) {
-          cells[lx + (wy - oy) * 8 + lz * 64] =
-            wy === h ? (noise.value2(wx * 0.3, wz * 0.3) > 0.5 ? TURF : TURF2) : wy > h - 3 ? SOIL : ROCK;
-          touched = true;
-        }
-      }
-    }
-    return touched;
-  });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   const quality = gpu.software ? "low" : "medium";
   // A ray that runs out of steps returns "no hit" and shades as sky, so the cap
@@ -173,7 +145,10 @@ if (app) {
   });
 
   let spin = true;
+  /** Set once the chunked world exists; see below. */
+  let streamWorld: (() => void) | null = null;
   const loop = runLoop((now) => {
+    streamWorld?.();
     perf.frame(now);
     gpu.renderScale = perf.scale();
     resizeToDisplay(gpu);
@@ -186,49 +161,6 @@ if (app) {
     spin = false;
     loop.setContinuous(false);
   });
-
-  // --- planting -------------------------------------------------------------
-  interface Planted {
-    x: number;
-    z: number;
-    r: number;
-  }
-  // Plants are bucketed into a coarse grid so a candidate only tests its own
-  // cell and the eight around it. Scanning every plant placed so far is fine
-  // for a single tile but quadratic, and a 4x4 forest plants over a thousand.
-  const CELL = 64; // > the largest clearance below, so 3x3 cells always suffice
-  const gw = Math.ceil(SIZE.x / CELL);
-  const gd = Math.ceil(SIZE.z / CELL);
-  const buckets: Planted[][] = Array.from({ length: gw * gd }, () => []);
-  const bucketAt = (x: number, z: number) =>
-    buckets[Math.min(gw - 1, (x / CELL) | 0) + Math.min(gd - 1, (z / CELL) | 0) * gw];
-
-  /**
-   * Reject a spot that crowds anything already planted. The clearance between
-   * two plants is the *larger* of their radii, not the sum: a forest wants its
-   * canopies touching, and summing would push every shrub a full tree-radius
-   * clear of a tree that is itself a full tree-radius from its neighbour,
-   * leaving nowhere for the undergrowth to go.
-   */
-  function findSpot(radius: number, margin: number, tries = 120): Planted | null {
-    for (let t = 0; t < tries; t++) {
-      const x = Math.round(margin + rng() * (SIZE.x - margin * 2));
-      const z = Math.round(margin + rng() * (SIZE.z - margin * 2));
-      const cx = Math.min(gw - 1, (x / CELL) | 0);
-      const cz = Math.min(gd - 1, (z / CELL) | 0);
-      let ok = true;
-      for (let j = Math.max(0, cz - 1); j <= Math.min(gd - 1, cz + 1) && ok; j++) {
-        for (let i = Math.max(0, cx - 1); i <= Math.min(gw - 1, cx + 1) && ok; i++) {
-          for (const p of buckets[i + j * gw]) {
-            const clear = Math.max(p.r, radius);
-            if ((p.x - x) ** 2 + (p.z - z) ** 2 < clear * clear) { ok = false; break; }
-          }
-        }
-      }
-      if (ok) return { x, z, r: radius };
-    }
-    return null;
-  }
 
   // Generating a unique model per plant is what makes a big forest slow to
   // build: measured at 4x4 it was 90% of the total. A pool generates a dozen per
@@ -297,7 +229,6 @@ if (app) {
   ];
 
   const pools = new Map<string, VariantPool>();
-  const pool = (key: string): VariantPool => pools.get(key)!;
 
   /** Build every variant, on workers when available. Returns models generated. */
   async function buildPools(): Promise<number> {
@@ -354,84 +285,130 @@ if (app) {
     return n;
   };
 
-  function plant(entity: Entity, key: string, x: number, z: number, o: Orientation): void {
-    const { base } = palette.allocateFor(entity, key);
-    const y = height[x + z * SIZE.x] + 1;
-    // The palette only changes when a species is seen for the first time.
-    if (palette.used !== lastPaletteSize) {
-      lastPaletteSize = palette.used;
-      renderer.updatePalette(palette.buildPalette());
-    }
-    blitModelToBricks(renderer, entity.model, { x, y, z }, base, o);
-  }
-  let lastPaletteSize = -1;
-
   // Growing one entity per frame would be needlessly slow on a fast machine and
   // needlessly janky on a slow one, so yield on a time budget instead: plant as
   // many entities as fit in a frame, then hand the thread back to paint one.
   // `grow=0` plants everything in one go, for screenshots and benchmarks.
   const incremental = params.get("grow") !== "0";
   let lastYield = performance.now();
-  const breathe = async (): Promise<void> => {
-    if (!incremental || performance.now() - lastYield < 16) return;
+  const breathe = async (force = false): Promise<void> => {
+    if (!force && (!incremental || performance.now() - lastYield < 16)) return;
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
     lastYield = performance.now();
   };
   const t0 = performance.now();
   const modelCount = await buildPools();
   const tModels = performance.now() - t0;
+  // --- the world ------------------------------------------------------------
+  // Built a chunk at a time around the camera rather than all at once, so what
+  // exists is bounded by the view and not by the size of the world.
+  //
+  // That makes generation order-dependent unless it is a pure function of
+  // position, because chunks are built in whatever order the camera reaches
+  // them. Entities come from a jittered grid (scatterRegion) that any chunk can
+  // evaluate for itself and for its neighbours, and each chunk draws everything
+  // reaching into it clipped to its own bounds — so a tree straddling a
+  // boundary is identical whichever side was built first.
+  const CHUNK = 64;
+  /** Cell size per layer, picked to land near the old per-tile entity counts. */
+  const LAYERS = [
+    { key: "tree", kinds: TREE_KINDS, cell: 90, salt: 1, margin: 80, chance: 0.92 },
+    { key: "bush", kinds: BUSH_KINDS, cell: 68, salt: 2, margin: 36, chance: 0.9 },
+    { key: "grass", kinds: GRASS_KINDS, cell: 55, salt: 3, margin: 24, chance: 0.9 },
+  ] as const;
+
   let voxels = 0;
-  let planted = 0;
-  const total = COUNTS.trees + COUNTS.bushes + COUNTS.grass;
-  const progress = (label: string) => {
-    info.textContent = `${label} · ${planted}/${total} · ${(voxels / 1000).toFixed(0)}k voxels`;
+  let placed = 0;
+  let lastPaletteSize = -1;
+
+  const world = makeChunkedWorld({
+    target: renderer,
+    size: SIZE,
+    chunk: CHUNK,
+    seed,
+    generate(ctx) {
+      ctx.edit({ ...ctx.box, y1: maxH }, (cells, ox, oy, oz) => {
+        let touched = false;
+        for (let lz = 0; lz < 8; lz++) {
+          const wz = oz + lz;
+          if (wz >= SIZE.z) break;
+          for (let lx = 0; lx < 8; lx++) {
+            const wx = ox + lx;
+            if (wx >= SIZE.x) break;
+            const h = height[wx + wz * SIZE.x];
+            const top = Math.min(h, oy + 7);
+            for (let wy = oy; wy <= top; wy++) {
+              cells[lx + (wy - oy) * 8 + lz * 64] =
+                wy === h ? (noise.value2(wx * 0.3, wz * 0.3) > 0.5 ? TURF : TURF2) : wy > h - 3 ? SOIL : ROCK;
+              touched = true;
+            }
+          }
+        }
+        return touched;
+      });
+
+      for (const layer of LAYERS) {
+        scatterRegion(
+          { cell: layer.cell, seed, salt: layer.salt },
+          ctx.box.x0 - layer.margin, ctx.box.z0 - layer.margin,
+          ctx.box.x1 + layer.margin, ctx.box.z1 + layer.margin,
+          (pt) => {
+            if (pt.x < 0 || pt.z < 0 || pt.x >= SIZE.x || pt.z >= SIZE.z) return;
+            if (pt.rng() > layer.chance) return;
+            const kind = layer.kinds[Math.min(layer.kinds.length - 1, (pt.rng() * layer.kinds.length) | 0)];
+            const key = `${layer.key}:${kind}:${season}`;
+            const v = pools.get(key)!.at((pt.rng() * 1e6) | 0, pt.rng);
+            const { base } = palette.allocateFor(v.entity, key);
+            if (palette.used !== lastPaletteSize) {
+              lastPaletteSize = palette.used;
+              renderer.updatePalette(palette.buildPalette());
+            }
+            ctx.blit(v.entity.model, { x: pt.x, y: height[pt.x + pt.z * SIZE.x] + 1, z: pt.z }, base, v.orientation);
+            // A straddling entity is offered to every chunk it can reach, so
+            // count it once — for the chunk that owns its root.
+            if (pt.x >= ctx.box.x0 && pt.x <= ctx.box.x1 && pt.z >= ctx.box.z0 && pt.z <= ctx.box.z1) {
+              placed++;
+              voxels += sizeOf(v.entity);
+            }
+          },
+        );
+      }
+    },
+  });
+
+  // How much world to keep resident. Defaults to all of it, so the demo still
+  // shows a whole forest; lower it to watch residency work.
+  const RADIUS = Number(params.get("radius") ?? SIZE.x * 1.5);
+  world.focus(SIZE.x / 2, SIZE.z / 2, RADIUS);
+  const totalChunks = world.pending;
+
+  while (world.pending) {
+    const left = world.step(12);
+    info.textContent = `building ${totalChunks - left}/${totalChunks} chunks`;
+    loop.invalidate();
+    await breathe(true);
+  }
+
+  // Keep the world following the view. Nothing moves the target in this demo,
+  // so this is idle here — but it is what makes the residency real rather than
+  // a one-shot: pan or walk and the world follows, at a bounded cost.
+  let focusX = target[0];
+  let focusZ = target[2];
+  streamWorld = () => {
+    if (Math.abs(target[0] - focusX) < CHUNK / 2 && Math.abs(target[2] - focusZ) < CHUNK / 2) {
+      if (world.pending) world.step(4);
+      return;
+    }
+    focusX = target[0];
+    focusZ = target[2];
+    world.focus(focusX, focusZ, RADIUS);
+    world.step(4);
   };
-
-  // Trees first and largest, so they claim their space before the undergrowth.
-  for (let i = 0; i < COUNTS.trees; i++) {
-    const kind = TREE_KINDS[Math.floor(rng() * TREE_KINDS.length)];
-    const spot = findSpot(30, 40);
-    if (!spot) continue;
-    bucketAt(spot.x, spot.z).push(spot);
-    const v = pool(`tree:${kind}:${season}`).pick(rng);
-    plant(v.entity, `tree:${kind}:${season}`, spot.x, spot.z, v.orientation);
-    voxels += sizeOf(v.entity);
-    planted++;
-    progress("growing trees");
-    await breathe();
-  }
-
-  for (let i = 0; i < COUNTS.bushes; i++) {
-    const kind = BUSH_KINDS[Math.floor(rng() * BUSH_KINDS.length)];
-    const spot = findSpot(16, 24);
-    if (!spot) continue;
-    bucketAt(spot.x, spot.z).push(spot);
-    const v = pool(`bush:${kind}:${season}`).pick(rng);
-    plant(v.entity, `bush:${kind}:${season}`, spot.x, spot.z, v.orientation);
-    voxels += sizeOf(v.entity);
-    planted++;
-    progress("planting shrubs");
-    await breathe();
-  }
-
-  for (let i = 0; i < COUNTS.grass; i++) {
-    const kind = GRASS_KINDS[Math.floor(rng() * GRASS_KINDS.length)];
-    // Ground cover is allowed to crowd, so it only avoids other patches.
-    const spot = findSpot(10, 14);
-    if (!spot) continue;
-    bucketAt(spot.x, spot.z).push(spot);
-    const v = pool(`grass:${kind}:${season}`).pick(rng);
-    plant(v.entity, `grass:${kind}:${season}`, spot.x, spot.z, v.orientation);
-    voxels += sizeOf(v.entity);
-    planted++;
-    progress("scattering ground cover");
-    await breathe();
-  }
 
   const secs = ((performance.now() - t0) / 1000).toFixed(1);
   const mem = renderer.stats();
   info.textContent =
-    `${planted} entities from ${modelCount} models ` +
+    `${placed} plants from ${modelCount} models in ${world.resident} chunks ` +
     `(${(tModels / 1000).toFixed(1)}s gen, ${((performance.now() - t0 - tModels) / 1000).toFixed(1)}s plant) · ` +
     `${(voxels / 1000).toFixed(0)}k voxels · ${palette.used}/255 palette slots · ` +
     `${(mem.bytes / 1048576).toFixed(0)} MB of bricks (dense would be ${(mem.dense / 1048576).toFixed(0)} MB) · ` +
