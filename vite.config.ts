@@ -21,6 +21,7 @@ export default defineConfig({
         orbit: page("orbit/index.html"),
         "minecraft-region": page("minecraft-region/index.html"),
         forest: page("forest/index.html"),
+        village: page("village/index.html"),
       },
     },
   },
