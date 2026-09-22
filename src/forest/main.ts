@@ -44,7 +44,7 @@ import { DAYLIGHT } from "../shared/env";
 // times the ground: 1280x176x1280, a 288 MB r8uint texture. Entity counts and
 // the camera distance follow it, so the forest reads the same at any size.
 const params = new URLSearchParams(location.search);
-const SPAN = Math.max(1, Math.min(4, Math.round(Number(params.get("scale") ?? 4))));
+const SPAN = Math.max(1, Math.min(8, Math.round(Number(params.get("scale") ?? 4))));
 const TILE = 320;
 const AREA = SPAN * SPAN;
 const SIZE = { x: TILE * SPAN, y: 176, z: TILE * SPAN };
