@@ -23,7 +23,7 @@ import {
 } from "@voxolith/renderer";
 import { seededRandom, hashSeed } from "@voxolith/renderer/core";
 import {
-  blitModel,
+  blitModelToBricks,
   makeVariantPool,
   PaletteAllocator,
   voxelCount,
@@ -49,7 +49,6 @@ const SPAN = Math.max(1, Math.min(8, Math.round(Number(params.get("scale") ?? 4)
 const TILE = 320;
 const AREA = SPAN * SPAN;
 const SIZE = { x: TILE * SPAN, y: 176, z: TILE * SPAN };
-const idx = (x: number, y: number, z: number) => x + y * SIZE.x + z * SIZE.x * SIZE.y;
 
 const seed = hashSeed(params.get("seed") ?? "voxolith");
 const season = (params.get("season") ?? "summer") as "spring" | "summer" | "autumn" | "winter";
@@ -71,7 +70,9 @@ if (app) {
   const noise = makeNoise(seed);
 
   // --- ground ---------------------------------------------------------------
-  const world = new Uint8Array(SIZE.x * SIZE.y * SIZE.z);
+  // No dense voxel array anywhere: the world is written straight into brick
+  // storage. A dense mirror of an 8x8 forest would be 1.1 GB of Uint8Array for a
+  // world the GPU holds sparsely in ~160 MB.
   const palette = new PaletteAllocator(1);
   const ground: Role[] = [
     { id: "ground.grass", name: "Turf", color: [0.29, 0.42, 0.21] },
@@ -94,16 +95,32 @@ if (app) {
         Math.round(noise.fbm2(x * 0.05, z * 0.05, 2) * 3);
       height[x + z * SIZE.x] = Math.max(3, h);
     }
-  for (let z = 0; z < SIZE.z; z++)
-    for (let x = 0; x < SIZE.x; x++) {
-      const h = height[x + z * SIZE.x];
-      for (let y = 0; y <= h; y++) {
-        world[idx(x, y, z)] =
-          y === h ? (noise.value2(x * 0.3, z * 0.3) > 0.5 ? TURF : TURF2) : y > h - 3 ? SOIL : ROCK;
+  let maxH = 0;
+  for (let i = 0; i < height.length; i++) if (height[i] > maxH) maxH = height[i];
+
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette() });
+
+  // Fill the terrain brick by brick. Only the bricks in the height band are
+  // visited, and within each only the columns that actually have ground.
+  renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: maxH, z1: SIZE.z - 1 }, (cells, ox, oy, oz) => {
+    let touched = false;
+    for (let lz = 0; lz < 8; lz++) {
+      const wz = oz + lz;
+      if (wz >= SIZE.z) break;
+      for (let lx = 0; lx < 8; lx++) {
+        const wx = ox + lx;
+        if (wx >= SIZE.x) break;
+        const h = height[wx + wz * SIZE.x];
+        const top = Math.min(h, oy + 7);
+        for (let wy = oy; wy <= top; wy++) {
+          cells[lx + (wy - oy) * 8 + lz * 64] =
+            wy === h ? (noise.value2(wx * 0.3, wz * 0.3) > 0.5 ? TURF : TURF2) : wy > h - 3 ? SOIL : ROCK;
+          touched = true;
+        }
       }
     }
-
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, data: world, palette: palette.buildPalette() });
+    return touched;
+  });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   const quality = gpu.software ? "low" : "medium";
   // A ray that runs out of steps returns "no hit" and shades as sky, so the cap
@@ -340,14 +357,12 @@ if (app) {
   function plant(entity: Entity, key: string, x: number, z: number, o: Orientation): void {
     const { base } = palette.allocateFor(entity, key);
     const y = height[x + z * SIZE.x] + 1;
-    const box = blitModel({ size: SIZE, data: world }, entity.model, { x, y, z }, base, o);
-    if (!box) return;
     // The palette only changes when a species is seen for the first time.
     if (palette.used !== lastPaletteSize) {
       lastPaletteSize = palette.used;
       renderer.updatePalette(palette.buildPalette());
     }
-    renderer.updateVoxels(world, box);
+    blitModelToBricks(renderer, entity.model, { x, y, z }, base, o);
   }
   let lastPaletteSize = -1;
 
@@ -414,10 +429,13 @@ if (app) {
   }
 
   const secs = ((performance.now() - t0) / 1000).toFixed(1);
+  const mem = renderer.stats();
   info.textContent =
     `${planted} entities from ${modelCount} models ` +
     `(${(tModels / 1000).toFixed(1)}s gen, ${((performance.now() - t0 - tModels) / 1000).toFixed(1)}s plant) · ` +
-    `${(voxels / 1000).toFixed(0)}k voxels · ${palette.used}/255 palette slots · grown in ${secs}s` +
+    `${(voxels / 1000).toFixed(0)}k voxels · ${palette.used}/255 palette slots · ` +
+    `${(mem.bytes / 1048576).toFixed(0)} MB of bricks (dense would be ${(mem.dense / 1048576).toFixed(0)} MB) · ` +
+    `grown in ${secs}s` +
     ` · drag to orbit, wheel to zoom`;
   loop.invalidate();
 }
