@@ -14,6 +14,7 @@ import {
   createRenderer,
   makeCamera,
   makeOrbitControl,
+  makePerf,
   observeResize,
   OccupancyGrid,
   QUALITY_PRESETS,
@@ -30,10 +31,17 @@ import { generateGrass, PRESETS as GRASSES } from "@voxolith/gen-grass";
 import { boot, runLoop } from "../shared/boot";
 import { DAYLIGHT } from "../shared/env";
 
-const SIZE = { x: 320, y: 176, z: 320 };
+// One tile is the original 320-voxel-square footprint. `scale` lays out a
+// SPANxSPAN block of them at the same voxel resolution, so scale=4 is sixteen
+// times the ground: 1280x176x1280, a 288 MB r8uint texture. Entity counts and
+// the camera distance follow it, so the forest reads the same at any size.
+const params = new URLSearchParams(location.search);
+const SPAN = Math.max(1, Math.min(4, Math.round(Number(params.get("scale") ?? 4))));
+const TILE = 320;
+const AREA = SPAN * SPAN;
+const SIZE = { x: TILE * SPAN, y: 176, z: TILE * SPAN };
 const idx = (x: number, y: number, z: number) => x + y * SIZE.x + z * SIZE.x * SIZE.y;
 
-const params = new URLSearchParams(location.search);
 const seed = hashSeed(params.get("seed") ?? "voxolith");
 const season = (params.get("season") ?? "summer") as "spring" | "summer" | "autumn" | "winter";
 // Keeping the species list short keeps the palette comfortable: each species
@@ -42,9 +50,9 @@ const TREE_KINDS = ["oak", "birch", "spruce"] as const;
 const BUSH_KINDS = ["bush", "bramble"] as const;
 const GRASS_KINDS = ["grass", "meadow", "fern"] as const;
 const COUNTS = {
-  trees: Number(params.get("trees") ?? 14),
-  bushes: Number(params.get("bushes") ?? 22),
-  grass: Number(params.get("grass") ?? 34),
+  trees: Number(params.get("trees") ?? 14 * AREA),
+  bushes: Number(params.get("bushes") ?? 22 * AREA),
+  grass: Number(params.get("grass") ?? 34 * AREA),
 };
 
 const app = await boot("forest");
@@ -88,14 +96,25 @@ if (app) {
 
   const renderer: Renderer = await createRenderer(gpu, { size: SIZE, data: world, palette: palette.buildPalette() });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
-  renderer.setQuality(QUALITY_PRESETS[gpu.software ? "low" : "medium"]);
+  const quality = gpu.software ? "low" : "medium";
+  // A ray that runs out of steps returns "no hit" and shades as sky, so the cap
+  // is a correctness backstop, not a quality knob. Coarse skipping keeps the
+  // real cost low even here — measured worst case over this scene is ~510 steps
+  // at scale=4, from a camera down inside the canopy — but the budget scales
+  // with the world for headroom. Over-provisioning is free: rays that terminate
+  // early still terminate early.
+  renderer.setQuality({
+    ...QUALITY_PRESETS[quality],
+    maxSteps: Math.min(4096, QUALITY_PRESETS[quality].maxSteps * SPAN),
+  });
   const occupancy = new OccupancyGrid(SIZE, world);
   renderer.updateCoarse(occupancy.data);
 
   // --- camera ---------------------------------------------------------------
   const target: Vec3 = [SIZE.x / 2, BASE_Y + 46, SIZE.z / 2];
-  const camera = makeCamera({ target, distance: 430, pitchDeg: 20, fovDeg: 42 });
-  let distance = 430;
+  const far = 430 * SPAN;
+  const camera = makeCamera({ target, distance: far, pitchDeg: 20, fovDeg: 42 });
+  let distance = far;
   const orbit = makeOrbitControl(canvas, {
     start: 35,
     min: -Infinity,
@@ -106,14 +125,33 @@ if (app) {
     "wheel",
     (e) => {
       e.preventDefault();
-      distance = Math.max(140, Math.min(700, distance * (1 + Math.sign(e.deltaY) * 0.1)));
+      distance = Math.max(140, Math.min(far * 1.7, distance * (1 + Math.sign(e.deltaY) * 0.1)));
       loop.invalidate();
     },
     { passive: false },
   );
 
+  // Frame cadence + adaptive render scale, the same knob the other apps use.
+  // ?perf=1 shows the overlay; the controller runs either way, so a slow
+  // machine drops resolution instead of the frame rate.
+  const adapter = gpu.adapterInfo;
+  const perf = makePerf({
+    enabled: params.has("perf"),
+    scale: gpu.renderScale,
+    minScale: gpu.software ? 0.25 : 0.35,
+    // The forest renders continuously and a big one can take well over 250 ms
+    // a frame; without this the default gap filter discards every sample and
+    // the overlay cheerfully reports 60 fps while the scale never adapts.
+    maxSampleMs: 4000,
+    label:
+      ([adapter.vendor, adapter.architecture, adapter.description].filter(Boolean).join(" · ") || "unknown adapter") +
+      `${gpu.software ? " (software)" : ""} · quality ${quality}`,
+  });
+
   let spin = true;
   const loop = runLoop((now) => {
+    perf.frame(now);
+    gpu.renderScale = perf.scale();
     resizeToDisplay(gpu);
     const yaw = orbit.yaw() + (spin ? now / 260 : 0);
     renderer.render({ ...camera(yaw, distance, target), ...DAYLIGHT });
@@ -131,7 +169,16 @@ if (app) {
     z: number;
     r: number;
   }
-  const placed: Planted[] = [];
+  // Plants are bucketed into a coarse grid so a candidate only tests its own
+  // cell and the eight around it. Scanning every plant placed so far is fine
+  // for a single tile but quadratic, and a 4x4 forest plants over a thousand.
+  const CELL = 64; // > the largest clearance below, so 3x3 cells always suffice
+  const gw = Math.ceil(SIZE.x / CELL);
+  const gd = Math.ceil(SIZE.z / CELL);
+  const buckets: Planted[][] = Array.from({ length: gw * gd }, () => []);
+  const bucketAt = (x: number, z: number) =>
+    buckets[Math.min(gw - 1, (x / CELL) | 0) + Math.min(gd - 1, (z / CELL) | 0) * gw];
+
   /**
    * Reject a spot that crowds anything already planted. The clearance between
    * two plants is the *larger* of their radii, not the sum: a forest wants its
@@ -143,12 +190,15 @@ if (app) {
     for (let t = 0; t < tries; t++) {
       const x = Math.round(margin + rng() * (SIZE.x - margin * 2));
       const z = Math.round(margin + rng() * (SIZE.z - margin * 2));
+      const cx = Math.min(gw - 1, (x / CELL) | 0);
+      const cz = Math.min(gd - 1, (z / CELL) | 0);
       let ok = true;
-      for (const p of placed) {
-        const clear = Math.max(p.r, radius);
-        if ((p.x - x) ** 2 + (p.z - z) ** 2 < clear * clear) {
-          ok = false;
-          break;
+      for (let j = Math.max(0, cz - 1); j <= Math.min(gd - 1, cz + 1) && ok; j++) {
+        for (let i = Math.max(0, cx - 1); i <= Math.min(gw - 1, cx + 1) && ok; i++) {
+          for (const p of buckets[i + j * gw]) {
+            const clear = Math.max(p.r, radius);
+            if ((p.x - x) ** 2 + (p.z - z) ** 2 < clear * clear) { ok = false; break; }
+          }
         }
       }
       if (ok) return { x, z, r: radius };
@@ -190,7 +240,7 @@ if (app) {
     const kind = TREE_KINDS[Math.floor(rng() * TREE_KINDS.length)];
     const spot = findSpot(30, 40);
     if (!spot) continue;
-    placed.push(spot);
+    bucketAt(spot.x, spot.z).push(spot);
     const p = structuredClone(TREES[kind]);
     p.shape.height = Math.round(84 + rng() * 40);
     p.look.season = season;
@@ -207,7 +257,7 @@ if (app) {
     const kind = BUSH_KINDS[Math.floor(rng() * BUSH_KINDS.length)];
     const spot = findSpot(16, 24);
     if (!spot) continue;
-    placed.push(spot);
+    bucketAt(spot.x, spot.z).push(spot);
     const p = structuredClone(BUSHES[kind]);
     p.shape.height = Math.round(28 + rng() * 22);
     p.look.season = season;
@@ -224,7 +274,7 @@ if (app) {
     // Ground cover is allowed to crowd, so it only avoids other patches.
     const spot = findSpot(10, 14);
     if (!spot) continue;
-    placed.push(spot);
+    bucketAt(spot.x, spot.z).push(spot);
     const p = structuredClone(GRASSES[kind]);
     p.shape.height = Math.round(16 + rng() * 14);
     p.look.season = season;
