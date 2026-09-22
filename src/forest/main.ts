@@ -16,7 +16,6 @@ import {
   makeOrbitControl,
   makePerf,
   observeResize,
-  OccupancyGrid,
   QUALITY_PRESETS,
   resizeToDisplay,
   type Renderer,
@@ -107,8 +106,6 @@ if (app) {
     ...QUALITY_PRESETS[quality],
     maxSteps: Math.min(4096, QUALITY_PRESETS[quality].maxSteps * SPAN),
   });
-  const occupancy = new OccupancyGrid(SIZE, world);
-  renderer.updateCoarse(occupancy.data);
 
   // --- camera ---------------------------------------------------------------
   const target: Vec3 = [SIZE.x / 2, BASE_Y + 46, SIZE.z / 2];
@@ -213,7 +210,6 @@ if (app) {
     if (!box) return;
     renderer.updatePalette(palette.buildPalette());
     renderer.updateVoxels(world, box);
-    renderer.updateCoarse(occupancy.data, occupancy.updateBox(world, box));
   }
 
   // Growing one entity per frame would be needlessly slow on a fast machine and
