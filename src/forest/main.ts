@@ -32,7 +32,7 @@ import {
   type Role,
   type VariantPool,
 } from "@voxolith/engine";
-import { makeNoise } from "@voxolith/engine/build";
+import { makeNoise } from "@voxolith/gen-kit";
 import { makeGeneratorPool } from "@voxolith/engine/worker";
 import { generateTree, PRESETS as TREES } from "@voxolith/gen-tree";
 import { generateBush, PRESETS as BUSHES } from "@voxolith/gen-bush";

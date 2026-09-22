@@ -8,7 +8,7 @@
 
 import { seededRandom, hashSeed, BrickGrid } from "@voxolith/renderer/core";
 import { blitModel, makeVariantPool, PaletteAllocator, type Entity, type Role, type VariantPool } from "@voxolith/engine";
-import { makeNoise } from "@voxolith/engine/build";
+import { makeNoise } from "@voxolith/gen-kit";
 import { generateTree, PRESETS as TREES } from "@voxolith/gen-tree";
 import { generateBush, PRESETS as BUSHES } from "@voxolith/gen-bush";
 import { generateGrass, PRESETS as GRASSES } from "@voxolith/gen-grass";
