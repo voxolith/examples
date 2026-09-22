@@ -33,6 +33,7 @@ import {
   type VariantPool,
 } from "@voxolith/engine";
 import { makeNoise } from "@voxolith/engine/build";
+import { makeGeneratorPool } from "@voxolith/engine/worker";
 import { generateTree, PRESETS as TREES } from "@voxolith/gen-tree";
 import { generateBush, PRESETS as BUSHES } from "@voxolith/gen-bush";
 import { generateGrass, PRESETS as GRASSES } from "@voxolith/gen-grass";
@@ -213,19 +214,117 @@ if (app) {
   }
 
   // Generating a unique model per plant is what makes a big forest slow to
-  // build: measured at 4x4 it is 90% of the total. A pool generates a dozen per
-  // species and places them in any of 8 axis-aligned orientations, so 1120
-  // plants cost ~96 generations and still show ~96 distinct silhouettes each.
+  // build: measured at 4x4 it was 90% of the total. A pool generates a dozen per
+  // species and places them in any of 8 axis-aligned orientations, so thousands
+  // of plants cost ~96 generations and still show ~96 silhouettes each.
+  //
+  // Those generations happen on a worker pool, in parallel and off the render
+  // thread, so the turntable keeps turning while the models are built.
   const VARIANTS = Math.max(1, Number(params.get("variants") ?? 12));
+  const useWorkers = params.get("workers") !== "0";
+
+  interface Species {
+    key: string;
+    /** Registry id, for the worker path. */
+    generator: string;
+    /** Parameters for variant `n`. One definition, used by both paths. */
+    params: (n: number) => unknown;
+    /** Main-thread fallback, when workers are unavailable. */
+    make: (n: number) => Entity;
+  }
+
+  const species: Species[] = [
+    ...TREE_KINDS.map((kind): Species => {
+      const at = (n: number) => {
+        const p = structuredClone(TREES[kind]);
+        p.shape.height = Math.round(84 + (n / VARIANTS) * 40);
+        p.look.season = season;
+        p.look.age = 0.35 + (n / VARIANTS) * 0.6;
+        return p;
+      };
+      return {
+        key: `tree:${kind}:${season}`,
+        generator: kind === "spruce" ? "voxolith/tree.conifer" : "voxolith/tree.broadleaf",
+        params: at,
+        make: (n) => generateTree(at(n), seededRandom(seed + n * 977)).entity,
+      };
+    }),
+    ...BUSH_KINDS.map((kind): Species => {
+      const at = (n: number) => {
+        const p = structuredClone(BUSHES[kind]);
+        p.shape.height = Math.round(28 + (n / VARIANTS) * 22);
+        p.look.season = season;
+        return p;
+      };
+      return {
+        key: `bush:${kind}:${season}`,
+        generator: "voxolith/bush",
+        params: at,
+        make: (n) => generateBush(at(n), seededRandom(seed + 5000 + n * 131)).entity,
+      };
+    }),
+    ...GRASS_KINDS.map((kind): Species => {
+      const at = (n: number) => {
+        const p = structuredClone(GRASSES[kind]);
+        p.shape.height = Math.round(16 + (n / VARIANTS) * 14);
+        p.look.season = season;
+        return p;
+      };
+      return {
+        key: `grass:${kind}:${season}`,
+        generator: "voxolith/grass",
+        params: at,
+        make: (n) => generateGrass(at(n), seededRandom(seed + 9000 + n * 71)).entity,
+      };
+    }),
+  ];
+
   const pools = new Map<string, VariantPool>();
-  const pool = (key: string, make: (i: number) => Entity): VariantPool => {
-    let p = pools.get(key);
-    if (!p) {
-      p = makeVariantPool({ count: VARIANTS, make });
-      pools.set(key, p);
+  const pool = (key: string): VariantPool => pools.get(key)!;
+
+  /** Build every variant, on workers when available. Returns models generated. */
+  async function buildPools(): Promise<number> {
+    const report = (done: number, total: number) => {
+      info.textContent = `generating ${done}/${total} models`;
+    };
+    if (useWorkers && typeof Worker !== "undefined") {
+      const workers = makeGeneratorPool({
+        spawn: () => new Worker(new URL("./gen.worker.ts", import.meta.url), { type: "module" }),
+      });
+      try {
+        await workers.ready();
+        const specs = species.flatMap((sp, si) =>
+          Array.from({ length: VARIANTS }, (_, n) => ({
+            generator: sp.generator,
+            params: sp.params(n),
+            seed: seed + si * 7919 + n * 977,
+            entityId: `${sp.key}-${n}`,
+          })),
+        );
+        const models = await workers.generateMany(specs, report);
+        species.forEach((sp, si) => {
+          const mine = models.slice(si * VARIANTS, (si + 1) * VARIANTS);
+          pools.set(sp.key, makeVariantPool({ count: mine.length, make: (i) => mine[i] }));
+        });
+        return models.length;
+      } catch (err) {
+        // A blocked or unsupported worker should degrade, not break the page.
+        console.warn("[forest] worker generation failed, falling back to the main thread:", err);
+      } finally {
+        workers.destroy();
+      }
     }
-    return p;
-  };
+    let done = 0;
+    for (const sp of species) {
+      const mine = Array.from({ length: VARIANTS }, (_, n) => {
+        const e = sp.make(n);
+        report(++done, species.length * VARIANTS);
+        return e;
+      });
+      pools.set(sp.key, makeVariantPool({ count: mine.length, make: (i) => mine[i] }));
+    }
+    return done;
+  }
 
   // voxelCount is a full scan, so count each model once however often it lands.
   const counted = new Map<Entity, number>();
@@ -264,6 +363,8 @@ if (app) {
     lastYield = performance.now();
   };
   const t0 = performance.now();
+  const modelCount = await buildPools();
+  const tModels = performance.now() - t0;
   let voxels = 0;
   let planted = 0;
   const total = COUNTS.trees + COUNTS.bushes + COUNTS.grass;
@@ -277,14 +378,7 @@ if (app) {
     const spot = findSpot(30, 40);
     if (!spot) continue;
     bucketAt(spot.x, spot.z).push(spot);
-    const v = pool(`tree:${kind}`, (n) => {
-      const p = structuredClone(TREES[kind]);
-      // Vary the pool itself, so a dozen models are a dozen different trees.
-      p.shape.height = Math.round(84 + (n / VARIANTS) * 40);
-      p.look.season = season;
-      p.look.age = 0.35 + (n / VARIANTS) * 0.6;
-      return generateTree(p, seededRandom(seed + n * 977), `tree-${kind}-${n}`).entity;
-    }).pick(rng);
+    const v = pool(`tree:${kind}:${season}`).pick(rng);
     plant(v.entity, `tree:${kind}:${season}`, spot.x, spot.z, v.orientation);
     voxels += sizeOf(v.entity);
     planted++;
@@ -297,12 +391,7 @@ if (app) {
     const spot = findSpot(16, 24);
     if (!spot) continue;
     bucketAt(spot.x, spot.z).push(spot);
-    const v = pool(`bush:${kind}`, (n) => {
-      const p = structuredClone(BUSHES[kind]);
-      p.shape.height = Math.round(28 + (n / VARIANTS) * 22);
-      p.look.season = season;
-      return generateBush(p, seededRandom(seed + 5000 + n * 131), `bush-${kind}-${n}`).entity;
-    }).pick(rng);
+    const v = pool(`bush:${kind}:${season}`).pick(rng);
     plant(v.entity, `bush:${kind}:${season}`, spot.x, spot.z, v.orientation);
     voxels += sizeOf(v.entity);
     planted++;
@@ -316,12 +405,7 @@ if (app) {
     const spot = findSpot(10, 14);
     if (!spot) continue;
     bucketAt(spot.x, spot.z).push(spot);
-    const v = pool(`grass:${kind}`, (n) => {
-      const p = structuredClone(GRASSES[kind]);
-      p.shape.height = Math.round(16 + (n / VARIANTS) * 14);
-      p.look.season = season;
-      return generateGrass(p, seededRandom(seed + 9000 + n * 71), `grass-${kind}-${n}`).entity;
-    }).pick(rng);
+    const v = pool(`grass:${kind}:${season}`).pick(rng);
     plant(v.entity, `grass:${kind}:${season}`, spot.x, spot.z, v.orientation);
     voxels += sizeOf(v.entity);
     planted++;
@@ -331,7 +415,8 @@ if (app) {
 
   const secs = ((performance.now() - t0) / 1000).toFixed(1);
   info.textContent =
-    `${planted} entities from ${[...pools.values()].reduce((a, p) => a + p.generated, 0)} models · ` +
+    `${planted} entities from ${modelCount} models ` +
+    `(${(tModels / 1000).toFixed(1)}s gen, ${((performance.now() - t0 - tModels) / 1000).toFixed(1)}s plant) · ` +
     `${(voxels / 1000).toFixed(0)}k voxels · ${palette.used}/255 palette slots · grown in ${secs}s` +
     ` · drag to orbit, wheel to zoom`;
   loop.invalidate();
