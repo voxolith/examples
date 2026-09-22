@@ -22,7 +22,16 @@ import {
   type Vec3,
 } from "@voxolith/renderer";
 import { seededRandom, hashSeed } from "@voxolith/renderer/core";
-import { blitModel, PaletteAllocator, type Entity, type Role } from "@voxolith/engine";
+import {
+  blitModel,
+  makeVariantPool,
+  PaletteAllocator,
+  voxelCount,
+  type Entity,
+  type Orientation,
+  type Role,
+  type VariantPool,
+} from "@voxolith/engine";
 import { makeNoise } from "@voxolith/engine/build";
 import { generateTree, PRESETS as TREES } from "@voxolith/gen-tree";
 import { generateBush, PRESETS as BUSHES } from "@voxolith/gen-bush";
@@ -203,14 +212,45 @@ if (app) {
     return null;
   }
 
-  function plant(entity: Entity, key: string, x: number, z: number): void {
+  // Generating a unique model per plant is what makes a big forest slow to
+  // build: measured at 4x4 it is 90% of the total. A pool generates a dozen per
+  // species and places them in any of 8 axis-aligned orientations, so 1120
+  // plants cost ~96 generations and still show ~96 distinct silhouettes each.
+  const VARIANTS = Math.max(1, Number(params.get("variants") ?? 12));
+  const pools = new Map<string, VariantPool>();
+  const pool = (key: string, make: (i: number) => Entity): VariantPool => {
+    let p = pools.get(key);
+    if (!p) {
+      p = makeVariantPool({ count: VARIANTS, make });
+      pools.set(key, p);
+    }
+    return p;
+  };
+
+  // voxelCount is a full scan, so count each model once however often it lands.
+  const counted = new Map<Entity, number>();
+  const sizeOf = (e: Entity): number => {
+    let n = counted.get(e);
+    if (n === undefined) {
+      n = voxelCount(e.model);
+      counted.set(e, n);
+    }
+    return n;
+  };
+
+  function plant(entity: Entity, key: string, x: number, z: number, o: Orientation): void {
     const { base } = palette.allocateFor(entity, key);
     const y = height[x + z * SIZE.x] + 1;
-    const box = blitModel({ size: SIZE, data: world }, entity.model, { x, y, z }, base);
+    const box = blitModel({ size: SIZE, data: world }, entity.model, { x, y, z }, base, o);
     if (!box) return;
-    renderer.updatePalette(palette.buildPalette());
+    // The palette only changes when a species is seen for the first time.
+    if (palette.used !== lastPaletteSize) {
+      lastPaletteSize = palette.used;
+      renderer.updatePalette(palette.buildPalette());
+    }
     renderer.updateVoxels(world, box);
   }
+  let lastPaletteSize = -1;
 
   // Growing one entity per frame would be needlessly slow on a fast machine and
   // needlessly janky on a slow one, so yield on a time budget instead: plant as
@@ -237,13 +277,16 @@ if (app) {
     const spot = findSpot(30, 40);
     if (!spot) continue;
     bucketAt(spot.x, spot.z).push(spot);
-    const p = structuredClone(TREES[kind]);
-    p.shape.height = Math.round(84 + rng() * 40);
-    p.look.season = season;
-    p.look.age = 0.35 + rng() * 0.6;
-    const { entity, stats } = generateTree(p, seededRandom(seed + i * 977), `tree-${i}`);
-    plant(entity, `tree:${kind}:${season}`, spot.x, spot.z);
-    voxels += stats.total;
+    const v = pool(`tree:${kind}`, (n) => {
+      const p = structuredClone(TREES[kind]);
+      // Vary the pool itself, so a dozen models are a dozen different trees.
+      p.shape.height = Math.round(84 + (n / VARIANTS) * 40);
+      p.look.season = season;
+      p.look.age = 0.35 + (n / VARIANTS) * 0.6;
+      return generateTree(p, seededRandom(seed + n * 977), `tree-${kind}-${n}`).entity;
+    }).pick(rng);
+    plant(v.entity, `tree:${kind}:${season}`, spot.x, spot.z, v.orientation);
+    voxels += sizeOf(v.entity);
     planted++;
     progress("growing trees");
     await breathe();
@@ -254,12 +297,14 @@ if (app) {
     const spot = findSpot(16, 24);
     if (!spot) continue;
     bucketAt(spot.x, spot.z).push(spot);
-    const p = structuredClone(BUSHES[kind]);
-    p.shape.height = Math.round(28 + rng() * 22);
-    p.look.season = season;
-    const { entity, stats } = generateBush(p, seededRandom(seed + 5000 + i * 131), `bush-${i}`);
-    plant(entity, `bush:${kind}:${season}`, spot.x, spot.z);
-    voxels += stats.total;
+    const v = pool(`bush:${kind}`, (n) => {
+      const p = structuredClone(BUSHES[kind]);
+      p.shape.height = Math.round(28 + (n / VARIANTS) * 22);
+      p.look.season = season;
+      return generateBush(p, seededRandom(seed + 5000 + n * 131), `bush-${kind}-${n}`).entity;
+    }).pick(rng);
+    plant(v.entity, `bush:${kind}:${season}`, spot.x, spot.z, v.orientation);
+    voxels += sizeOf(v.entity);
     planted++;
     progress("planting shrubs");
     await breathe();
@@ -271,12 +316,14 @@ if (app) {
     const spot = findSpot(10, 14);
     if (!spot) continue;
     bucketAt(spot.x, spot.z).push(spot);
-    const p = structuredClone(GRASSES[kind]);
-    p.shape.height = Math.round(16 + rng() * 14);
-    p.look.season = season;
-    const { entity, stats } = generateGrass(p, seededRandom(seed + 9000 + i * 71), `grass-${i}`);
-    plant(entity, `grass:${kind}:${season}`, spot.x, spot.z);
-    voxels += stats.total;
+    const v = pool(`grass:${kind}`, (n) => {
+      const p = structuredClone(GRASSES[kind]);
+      p.shape.height = Math.round(16 + (n / VARIANTS) * 14);
+      p.look.season = season;
+      return generateGrass(p, seededRandom(seed + 9000 + n * 71), `grass-${kind}-${n}`).entity;
+    }).pick(rng);
+    plant(v.entity, `grass:${kind}:${season}`, spot.x, spot.z, v.orientation);
+    voxels += sizeOf(v.entity);
     planted++;
     progress("scattering ground cover");
     await breathe();
@@ -284,7 +331,8 @@ if (app) {
 
   const secs = ((performance.now() - t0) / 1000).toFixed(1);
   info.textContent =
-    `${planted} entities · ${(voxels / 1000).toFixed(0)}k voxels · ${palette.used}/255 palette slots · grown in ${secs}s` +
+    `${planted} entities from ${[...pools.values()].reduce((a, p) => a + p.generated, 0)} models · ` +
+    `${(voxels / 1000).toFixed(0)}k voxels · ${palette.used}/255 palette slots · grown in ${secs}s` +
     ` · drag to orbit, wheel to zoom`;
   loop.invalidate();
 }
