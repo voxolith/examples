@@ -37,23 +37,15 @@ jobs:
           path: engine
       - uses: actions/checkout@v4
         with:
-          repository: voxolith/gen-tree
-          path: gen-tree
-      - uses: actions/checkout@v4
-        with:
-          repository: voxolith/gen-bush
-          path: gen-bush
-      - uses: actions/checkout@v4
-        with:
-          repository: voxolith/gen-grass
-          path: gen-grass
+          repository: voxolith/generators
+          path: generators
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
       - name: Create workspace root
         run: |
           cat > package.json <<'JSON'
-          { "name": "pages-workspace", "private": true, "workspaces": ["app", "renderer", "engine", "gen-tree", "gen-bush", "gen-grass"] }
+          { "name": "pages-workspace", "private": true, "workspaces": ["app", "renderer", "engine", "generators/*"] }
           JSON
       - run: bun install
       - name: Build
