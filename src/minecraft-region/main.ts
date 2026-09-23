@@ -4,20 +4,36 @@
 // `region/` folder.
 
 import { createRenderer, OccupancyGrid, buildMinecraftRegion, firstPersonFrame, resizeToDisplay, type Renderer } from "@voxolith/renderer";
+import { axis, button, createInput, makeActions, makeLookController, makeTouchControls, prepareSurface } from "@voxolith/engine/input";
 import { boot, runLoop } from "../shared/boot";
 import { DAYLIGHT } from "../shared/env";
 
 const app = await boot("minecraft-region");
 if (app) {
-  const { gpu, info } = app;
+  const { gpu, canvas, info } = app;
   let renderer: Renderer | null = null;
 
-  // Camera state.
+  // Free-fly controls, by action rather than by key, so the same loop works on
+  // a keyboard, a gamepad and a phone. Keys are physical (`code`), so WASD
+  // stays put on AZERTY.
+  prepareSurface(canvas);
+  const input = createInput(canvas);
+  const actions = makeActions(input, {
+    strafe: axis({ negative: ["key:KeyA", "key:ArrowLeft"], positive: ["key:KeyD", "key:ArrowRight"], analog: ["pad:LeftX", "touch:move.x"] }),
+    walk: axis({ negative: ["key:KeyS", "key:ArrowDown"], positive: ["key:KeyW", "key:ArrowUp"], analog: ["pad:LeftY-", "touch:move.y-"] }),
+    rise: axis({ negative: ["key:KeyC", "pad:LB", "touch:down"], positive: ["key:Space", "pad:RB", "touch:up"] }),
+    fast: button("key:ShiftLeft", "key:ShiftRight", "pad:LT"),
+  });
+  // Click to capture the mouse (Esc releases), or drag; right stick; Q/E and R/F turn too.
+  const look = makeLookController(input, {
+    pitch: -10,
+    keys: { left: ["KeyQ"], right: ["KeyE"], up: ["KeyR"], down: ["KeyF"] },
+  });
+  makeTouchControls(input, {
+    joysticks: [{ id: "move", side: "left" }],
+    buttons: [{ id: "up", label: "▲" }, { id: "down", label: "▼" }],
+  });
   const eye: [number, number, number] = [0, 0, 0];
-  let yaw = 0, pitch = -10;
-  const keys = new Set<string>();
-  window.addEventListener("keydown", (e) => keys.add(e.key.toLowerCase()));
-  window.addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
 
   async function load(buf: ArrayBuffer, name: string) {
     info.textContent = `${name}: building…`;
@@ -32,8 +48,8 @@ if (app) {
       r.updateCoarse(new OccupancyGrid(scene.size, scene.data).data);
       renderer = r;
       eye[0] = scene.size.x / 2; eye[1] = scene.size.y * 0.8; eye[2] = -10;
-      yaw = 0; pitch = -15;
-      info.textContent = `${name} · ${scene.meta.chunks} chunks · ${scene.meta.voxels.toLocaleString()} voxels · WASD move, Q/E turn, R/F pitch`;
+      look.set(0, -15);
+      info.textContent = `${name} · ${scene.meta.chunks} chunks · ${scene.meta.voxels.toLocaleString()} voxels · click to look, WASD move, Space/C up/down, Shift fast`;
     } catch (e) {
       info.textContent = `${name}: ${(e as Error).message}`;
     }
@@ -50,23 +66,19 @@ if (app) {
   });
 
   runLoop((_now, dt) => {
-    // Free-fly controls: WASD strafe/forward, Q/E yaw, R/F pitch, Shift = fast.
-    const speed = (keys.has("shift") ? 120 : 40) * dt;
-    const y = (yaw * Math.PI) / 180;
-    const fwd = [Math.sin(y), 0, Math.cos(y)], right = [Math.cos(y), 0, -Math.sin(y)];
-    const move = (v: number[], s: number) => { eye[0] += v[0] * s; eye[2] += v[2] * s; };
-    if (keys.has("w") || keys.has("arrowup")) move(fwd, speed);
-    if (keys.has("s") || keys.has("arrowdown")) move(fwd, -speed);
-    if (keys.has("d") || keys.has("arrowright")) move(right, speed);
-    if (keys.has("a") || keys.has("arrowleft")) move(right, -speed);
-    if (keys.has(" ")) eye[1] += speed;
-    if (keys.has("c")) eye[1] -= speed;
-    if (keys.has("q")) yaw -= 90 * dt;
-    if (keys.has("e")) yaw += 90 * dt;
-    if (keys.has("r")) pitch = Math.min(85, pitch + 60 * dt);
-    if (keys.has("f")) pitch = Math.max(-85, pitch - 60 * dt);
+    input.update();
+    look.update(dt);
+    const speed = (actions.down("fast") ? 120 : 40) * dt;
+    const y = (look.yaw() * Math.PI) / 180;
+    // firstPersonFrame's basis: forward (sin, cos), screen-right cross(forward, up).
+    const fwd = [Math.sin(y), Math.cos(y)], right = [-Math.cos(y), Math.sin(y)];
+    // The joystick's y is down-positive; walk reads it inverted (touch:move.y-).
+    const [sx, wz] = actions.vector("strafe", "walk");
+    eye[0] += (fwd[0] * wz + right[0] * sx) * speed;
+    eye[2] += (fwd[1] * wz + right[1] * sx) * speed;
+    eye[1] += actions.value("rise") * speed;
 
     resizeToDisplay(gpu);
-    renderer?.render({ ...firstPersonFrame(eye, yaw, pitch, 75), ...DAYLIGHT });
+    renderer?.render({ ...firstPersonFrame(eye, look.yaw(), look.pitch(), 75), ...DAYLIGHT });
   });
 }

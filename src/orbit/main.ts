@@ -1,7 +1,9 @@
-// orbit: a procedural terrain grid written directly into the voxel array,
-// the engine's drag-to-yaw orbit control, and wheel zoom.
+// orbit: a procedural terrain grid written directly into the voxel array, and
+// the engine's orbit controller: drag to turn, wheel or pinch to zoom,
+// right-drag or two fingers to pan.
 
-import { createRenderer, OccupancyGrid, makeCamera, makeOrbitControl, observeResize, resizeToDisplay } from "@voxolith/renderer";
+import { createRenderer, OccupancyGrid, makeCamera, observeResize, resizeToDisplay } from "@voxolith/renderer";
+import { createInput, makeOrbitController, prepareSurface } from "@voxolith/engine/input";
 import { boot, runLoop } from "../shared/boot";
 import { DAYLIGHT } from "../shared/env";
 
@@ -32,23 +34,22 @@ if (app) {
   renderer.updateCoarse(new OccupancyGrid(size, data).data);
   renderer.setFloor({ enabled: true, y: 0, colorA: [0.3, 0.32, 0.36], colorB: [0.24, 0.26, 0.3] });
 
-  // Nothing animates here, so render on demand: the loop only draws when the
-  // orbit control, the wheel or a resize invalidates it.
-  const target: [number, number, number] = [size.x / 2, 8, size.z / 2];
-  let distance = 200;
-  const camera = makeCamera({ target, distance, pitchDeg: 32, fovDeg: 35 });
+  // Nothing animates here, so render on demand: the loop only draws when
+  // input or a resize invalidates it.
+  const camera = makeCamera({ target: [size.x / 2, 8, size.z / 2], distance: 200, pitchDeg: 32, fovDeg: 35 });
   const loop = runLoop(() => {
     resizeToDisplay(gpu);
-    renderer.render({ ...camera(orbit.yaw(), distance, target), ...DAYLIGHT });
+    renderer.render({ ...camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch()), ...DAYLIGHT });
   }, false);
   observeResize(canvas, loop);
 
-  // Drag horizontally to change yaw (unclamped here); wheel changes distance.
-  const orbit = makeOrbitControl(canvas, { start: 35, min: -Infinity, max: Infinity, onChange: () => loop.invalidate() });
-  canvas.addEventListener("wheel", (e) => {
-    e.preventDefault();
-    distance = Math.max(40, Math.min(600, distance * (1 + Math.sign(e.deltaY) * 0.1)));
-    loop.invalidate();
-  }, { passive: false });
+  // One input per surface; the controller reads it. Passing the loop makes
+  // every input event request a frame.
+  prepareSurface(canvas, { contextMenu: false });
+  const input = createInput(canvas, { loop });
+  const orbit = makeOrbitController(input, {
+    yaw: 35, pitch: 32, distance: 200, distanceLimits: [40, 600], pitchLimits: [8, 85],
+    target: [size.x / 2, 8, size.z / 2], pan: "secondary", fovDeg: 35,
+  });
   loop.invalidate();
 }

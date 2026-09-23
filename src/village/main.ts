@@ -14,7 +14,6 @@
 import {
   createRenderer,
   makeCamera,
-  makeOrbitControl,
   makePerf,
   observeResize,
   QUALITY_PRESETS,
@@ -39,6 +38,7 @@ import {
 } from "@voxolith/engine";
 import { makeNoise } from "@voxolith/gen-kit";
 import { makeGeneratorPool } from "@voxolith/engine/worker";
+import { createInput, makeOrbitController, prepareSurface } from "@voxolith/engine/input";
 import { generateTree, PRESETS as TREES } from "@voxolith/gen-tree";
 import { generateBush, PRESETS as BUSHES } from "@voxolith/gen-bush";
 import { generateGrass, PRESETS as GRASSES } from "@voxolith/gen-grass";
@@ -116,17 +116,12 @@ if (app) {
   const target: Vec3 = [CX, BASE_Y + 30, CZ];
   const far = 430 * SPAN;
   const camera = makeCamera({ target, distance: far, pitchDeg: 30, fovDeg: 42 });
-  let distance = Math.max(300, VILLAGE_R * 2.9);
-  const orbit = makeOrbitControl(canvas, { start: 35, min: -Infinity, max: Infinity, onChange: () => loop.invalidate() });
-  canvas.addEventListener(
-    "wheel",
-    (e) => {
-      e.preventDefault();
-      distance = Math.max(90, Math.min(far * 1.7, distance * (1 + Math.sign(e.deltaY) * 0.1)));
-      loop.invalidate();
-    },
-    { passive: false },
-  );
+  // Drag to turn, wheel or pinch to zoom. Every input event requests a frame.
+  prepareSurface(canvas);
+  const input = createInput(canvas, { loop: { invalidate: () => loop.invalidate() } });
+  const orbit = makeOrbitController(input, {
+    yaw: 35, pitch: 30, pitchLimits: [6, 80], distance: Math.max(300, VILLAGE_R * 2.9), distanceLimits: [90, far * 1.7], fovDeg: 42,
+  });
 
   const adapter = gpu.adapterInfo;
   const perf = makePerf({
@@ -141,16 +136,19 @@ if (app) {
 
   let spin = true;
   let streamWorld: (() => void) | null = null;
-  const loop = runLoop((now) => {
+  const loop = runLoop((now, dt) => {
     streamWorld?.();
     perf.frame(now);
     gpu.renderScale = perf.scale();
     resizeToDisplay(gpu);
-    const yaw = orbit.yaw() + (spin ? now / 320 : 0);
-    renderer.render({ ...camera(yaw, distance, target), ...DAYLIGHT });
+    // The idle turntable turns the controller itself, so stopping it never jumps.
+    if (spin) orbit.set({ yaw: orbit.yaw() + dt * 3.12 });
+    renderer.render({ ...camera(orbit.yaw(), orbit.distance(), target, orbit.pitch()), ...DAYLIGHT });
   }, true);
   observeResize(canvas, loop);
-  canvas.addEventListener("pointerdown", () => {
+  // Any touch stops the slow turntable.
+  input.on((e) => {
+    if (e.kind !== "pointer" || e.phase !== "down" || !spin) return;
     spin = false;
     loop.setContinuous(false);
   });
