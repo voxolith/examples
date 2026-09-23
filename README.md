@@ -16,7 +16,7 @@ voxel raymarching engine. Each example is one `main.ts` with comments; the share
 | [`hello-vox`](src/hello-vox/main.ts) | load a `.vox`, `parseVox`, `createRenderer`, `OccupancyGrid`, `makeCamera`, render loop | ~35 |
 | [`orbit`](src/orbit/main.ts) | writing a procedural grid by hand, `createInput` + `makeOrbitController` (drag, wheel, pinch, right-drag pan), `setFloor` | ~55 |
 | [`minecraft-region`](src/minecraft-region/main.ts) | drop a Minecraft `.mca`, `buildMinecraftRegion` crop and downsample, `firstPersonFrame` free-fly with `makeActions`, `makeLookController` (pointer lock) and a touch joystick | ~85 |
-| [`forest`](src/forest/main.ts) | a streamed world from the entity generators: variant pools on workers, `scatterRegion`, `makeChunkedWorld`, one shared palette | ~420 |
+| [`forest`](src/forest/main.ts) | a streamed world from the entity generators: variant pools on workers, `scatterRegion`, `makeChunkedWorld`, one shared palette; a draggable lamp (`setLights`) and a day/night toggle (`dayNight`, `N`, `?time=night`) | ~560 |
 | [`village`](src/village/main.ts) | the forest plus houses and rocks: sites laid out up front, levelled pads, footpaths between doors, doors facing the village centre | ~540 |
 
 Shared: `boot.ts` (WebGPU init and the unsupported-browser card), `env.ts` (lighting and sky

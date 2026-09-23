@@ -16,7 +16,10 @@ import {
   makePerf,
   observeResize,
   QUALITY_PRESETS,
+  dayNight,
+  makeRay,
   resizeToDisplay,
+  type PointLight,
   type Renderer,
   type Vec3,
 } from "@voxolith/renderer";
@@ -33,12 +36,11 @@ import {
 } from "@voxolith/engine";
 import { makeNoise } from "@voxolith/gen-kit";
 import { makeGeneratorPool } from "@voxolith/engine/worker";
-import { createInput, makeOrbitController, prepareSurface } from "@voxolith/engine/input";
+import { createInput, makeOrbitController, prepareSurface, recogniseGestures } from "@voxolith/engine/input";
 import { generateTree, PRESETS as TREES } from "@voxolith/gen-tree";
 import { generateBush, PRESETS as BUSHES } from "@voxolith/gen-bush";
 import { generateGrass, PRESETS as GRASSES } from "@voxolith/gen-grass";
 import { boot, runLoop } from "../shared/boot";
-import { DAYLIGHT } from "../shared/env";
 
 // One tile is the original 320-voxel-square footprint. `scale` lays out a
 // SPANxSPAN block of them at the same voxel resolution, so scale=4 is sixteen
@@ -114,7 +116,10 @@ if (app) {
   prepareSurface(canvas);
   const input = createInput(canvas, { loop: { invalidate: () => loop.invalidate() } });
   const orbit = makeOrbitController(input, {
-    yaw: 35, pitch: 20, pitchLimits: [6, 80], distance: far, distanceLimits: [140, far * 1.7], fovDeg: 42,
+    yaw: 35, pitchLimits: [6, 80], distanceLimits: [110, far * 1.7], fovDeg: 42,
+    // At night the lamp is the subject: start close, looking down into its glade.
+    pitch: params.get("time") === "night" ? 42 : 20,
+    distance: params.get("time") === "night" ? Math.min(far, 260) : far,
   });
 
   // Frame cadence + adaptive render scale, the same knob the other apps use.
@@ -144,15 +149,143 @@ if (app) {
     resizeToDisplay(gpu);
     // The idle turntable turns the controller itself, so stopping it never jumps.
     if (spin) orbit.set({ yaw: orbit.yaw() + dt * 3.85 });
-    renderer.render({ ...camera(orbit.yaw(), orbit.distance(), target, orbit.pitch()), ...DAYLIGHT });
+    // Day/night: a toggle animates the phase forward through dusk or dawn.
+    if (phase < phaseTarget) {
+      phase = Math.min(phaseTarget, phase + dt * (0.5 / TRANSITION_S));
+      if (phase === phaseTarget) loop.setContinuous(spin);
+    }
+    renderer.render({ ...frame(), ...dayNight(phase) });
   }, true);
   observeResize(canvas, loop);
   // Any touch stops the slow turntable.
   input.on((e) => {
     if (e.kind !== "pointer" || e.phase !== "down" || !spin) return;
     spin = false;
-    loop.setContinuous(false);
+    loop.setContinuous(phase < phaseTarget);
   });
+
+  // --- lamp and time of day -------------------------------------------------
+  // A point light you can pick up and carry across the forest: it lights the
+  // ground and trunks around it and casts moving shadows through them. Grab it
+  // near its glow; double-click or double-tap the ground to drop it there.
+  const frame = () => camera(orbit.yaw(), orbit.distance(), target, orbit.pitch());
+  const HOVER = 7;
+  const groundAt = (x: number, z: number) => {
+    const xi = Math.max(0, Math.min(SIZE.x - 1, Math.round(x)));
+    const zi = Math.max(0, Math.min(SIZE.z - 1, Math.round(z)));
+    return height[xi + zi * SIZE.x];
+  };
+  const lamp: Vec3 = [SIZE.x / 2, 0, SIZE.z / 2];
+  lamp[1] = groundAt(lamp[0], lamp[2]) + HOVER;
+  const updateLamp = () => {
+    const lights: PointLight[] = [
+      // The lamp: warm, shadowed, with a visible glow.
+      { position: lamp, color: [1.0, 0.7, 0.38], intensity: 2.6, range: 90, glow: 3.5 },
+      // A soft unshadowed spill, so light still reaches just round a trunk.
+      { position: lamp, color: [1.0, 0.75, 0.45], intensity: 0.25, range: 50, shadows: false },
+    ];
+    renderer.setLights(lights);
+    loop.invalidate();
+  };
+  updateLamp();
+
+  /** Where a screen point's ray first dips below the heightmap, or null. */
+  const pickGround = (clientX: number, clientY: number): Vec3 | null => {
+    const { origin, dir } = makeRay(canvas, frame(), clientX, clientY);
+    const len = Math.hypot(dir[0], dir[1], dir[2]);
+    const d: Vec3 = [dir[0] / len, dir[1] / len, dir[2] / len];
+    const at = (t: number): Vec3 => [origin[0] + d[0] * t, origin[1] + d[1] * t, origin[2] + d[2] * t];
+    const inside = (p: Vec3) => p[0] >= 0 && p[2] >= 0 && p[0] < SIZE.x && p[2] < SIZE.z;
+    const below = (p: Vec3) => inside(p) && p[1] <= groundAt(p[0], p[2]);
+    let prev = 0;
+    for (let t = 1; t < SIZE.x * 4; t += 1.5) {
+      if (below(at(t))) {
+        // Refine between the last point above and this one below.
+        let lo = prev, hi = t;
+        for (let i = 0; i < 8; i++) {
+          const mid = (lo + hi) / 2;
+          if (below(at(mid))) hi = mid;
+          else lo = mid;
+        }
+        return at(hi);
+      }
+      prev = t;
+    }
+    return null;
+  };
+  /** The lamp's position on screen, in client pixels. */
+  const lampOnScreen = (): [number, number] | null => {
+    const f = frame();
+    const v: Vec3 = [lamp[0] - f.camPos[0], lamp[1] - f.camPos[1], lamp[2] - f.camPos[2]];
+    const z = v[0] * f.camFwd[0] + v[1] * f.camFwd[1] + v[2] * f.camFwd[2];
+    if (z <= 0) return null;
+    const x = (v[0] * f.camRight[0] + v[1] * f.camRight[1] + v[2] * f.camRight[2]) / z;
+    const y = (v[0] * f.camUp[0] + v[1] * f.camUp[1] + v[2] * f.camUp[2]) / z;
+    const rect = canvas.getBoundingClientRect();
+    const aspect = canvas.width / canvas.height;
+    return [
+      rect.left + ((x / (aspect * f.tanHalfFov) + 1) / 2) * rect.width,
+      rect.top + ((1 - y / f.tanHalfFov) / 2) * rect.height,
+    ];
+  };
+  const moveLampTo = (clientX: number, clientY: number) => {
+    const hit = pickGround(clientX, clientY);
+    if (!hit) return;
+    lamp[0] = hit[0];
+    lamp[2] = hit[2];
+    lamp[1] = groundAt(hit[0], hit[2]) + HOVER;
+    updateLamp();
+  };
+  const nearLamp = (x: number, y: number) => {
+    const s = lampOnScreen();
+    return !!s && Math.hypot(x - s[0], y - s[1]) < (params.has("grab") ? Number(params.get("grab")) : 32);
+  };
+
+  // Grabbing the lamp claims the pointer first (priority 10), so the orbit
+  // controller leaves that drag alone.
+  const lampOwner = {};
+  input.on((e) => {
+    if (e.kind !== "pointer") return;
+    const p = e.pointer;
+    if (e.phase === "down") {
+      if (nearLamp(p.x, p.y) && input.claim(p.id, lampOwner)) canvas.style.cursor = "grabbing";
+    } else if (input.claimedBy(p.id) === lampOwner) {
+      if (e.phase === "move") moveLampTo(p.x, p.y);
+      else canvas.style.cursor = "";
+    }
+  }, 10);
+  // Hover feedback only; the input tracks pressed pointers, not a hovering mouse.
+  canvas.addEventListener("pointermove", (e) => {
+    if (e.pointerType === "mouse" && e.buttons === 0) canvas.style.cursor = nearLamp(e.clientX, e.clientY) ? "grab" : "";
+  });
+  recogniseGestures(input, { doubleTap: (t) => moveLampTo(t.x, t.y) });
+  // For the end-to-end checks (tools/input-e2e.ts): where the lamp is drawn.
+  if (params.has("e2e")) Object.assign(window, { forestLamp: () => lampOnScreen() });
+
+  // Time of day: 0.5 is noon, 1.0 midnight. A toggle always runs forwards —
+  // day through sunset to night, night through sunrise to day.
+  const TRANSITION_S = 2.5;
+  let phase = params.get("time") === "night" ? 1.0 : 0.5;
+  let phaseTarget = phase;
+  const timeBtn = document.getElementById("time-toggle") as HTMLButtonElement | null;
+  const isNight = () => Math.round(phaseTarget * 2) % 2 === 0;
+  const syncButton = () => {
+    if (!timeBtn) return;
+    timeBtn.textContent = isNight() ? "Day" : "Night";
+    timeBtn.title = isNight() ? "Switch to day (N)" : "Switch to night (N)";
+  };
+  const toggleTime = () => {
+    phaseTarget = Math.floor(phaseTarget * 2 + 1e-6) / 2 + 0.5;
+    if (phase > phaseTarget) phase = phaseTarget - 0.5;
+    syncButton();
+    loop.setContinuous(true);
+  };
+  timeBtn?.addEventListener("click", toggleTime);
+  input.captureKeys(["KeyN"]);
+  input.on((e) => {
+    if (e.kind === "key" && e.phase === "down" && e.code === "KeyN" && !e.repeat) toggleTime();
+  });
+  syncButton();
 
   // Generating a unique model per plant is what makes a big forest slow to
   // build: measured at 4x4 it was 90% of the total. A pool generates a dozen per
@@ -302,6 +435,8 @@ if (app) {
   // reaching into it clipped to its own bounds — so a tree straddling a
   // boundary is identical whichever side was built first.
   const CHUNK = 64;
+  /** Radius of the clearing trees keep out of, round the lamp's starting spot. */
+  const GLADE = 60;
   /** Cell size per layer, picked to land near the old per-tile entity counts. */
   const LAYERS = [
     { key: "tree", kinds: TREE_KINDS, cell: 90, salt: 1, margin: 80, chance: 0.92 },
@@ -347,6 +482,8 @@ if (app) {
           (pt) => {
             if (pt.x < 0 || pt.z < 0 || pt.x >= SIZE.x || pt.z >= SIZE.z) return;
             if (pt.rng() > layer.chance) return;
+            // A glade at the centre, where the lamp starts: open ground to light.
+            if (layer.key !== "grass" && Math.hypot(pt.x - SIZE.x / 2, pt.z - SIZE.z / 2) < (layer.key === "tree" ? GLADE : GLADE * 0.6)) return;
             const kind = layer.kinds[Math.min(layer.kinds.length - 1, (pt.rng() * layer.kinds.length) | 0)];
             const key = `${layer.key}:${kind}:${season}`;
             const v = pools.get(key)!.at((pt.rng() * 1e6) | 0, pt.rng);
@@ -405,6 +542,6 @@ if (app) {
     `${(voxels / 1000).toFixed(0)}k voxels · ${palette.used}/255 palette slots · ` +
     `${(mem.bytes / 1048576).toFixed(0)} MB of bricks (dense would be ${(mem.dense / 1048576).toFixed(0)} MB) · ` +
     `grown in ${secs}s` +
-    ` · drag to orbit, wheel to zoom`;
+    ` · drag the lamp · N for night/day · drag to orbit, wheel to zoom`;
   loop.invalidate();
 }
