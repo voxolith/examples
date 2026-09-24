@@ -17,6 +17,8 @@ voxel raymarching engine. Each example is one `main.ts` with comments; the share
 | [`orbit`](src/orbit/main.ts) | writing a procedural grid by hand, `createInput` + `makeOrbitController` (drag, wheel, pinch, right-drag pan), `setFloor` | ~55 |
 | [`minecraft-region`](src/minecraft-region/main.ts) | drop a Minecraft `.mca`, `buildMinecraftRegion` crop and downsample, `firstPersonFrame` free-fly with `makeActions`, `makeLookController` (pointer lock) and a touch joystick | ~85 |
 | [`world`](src/world/main.ts) | a whole valley from the generators: `gen-terrain` ground and a river with animated water, a village laid out on it (sites, levelled pads, footpaths) and a forest that fades into it, streamed with `makeChunkedWorld`; a draggable lamp (`setLights`), day/night (`timeOfDay`, `N`, `?time=night`) and weather (`@voxolith/engine/atmosphere`, `W`, `?weather=rain`) | ~780 |
+| [`creature`](src/creature/main.ts) | rigged, animated rats from `gen-creature`: `makeAnimator`, `bakePose` through a pose cache, `makeBrickStamper`; tap to `wound`, tap again to `sever` (gibs, blood) | ~380 |
+| [`swarm`](src/swarm/main.ts) | hundreds of animated rats with `makeCrowd` (pose cache, bake budget, distance LOD), scattering from the cursor; `?count=`, live cost overlay | ~170 |
 
 Shared: `boot.ts` (WebGPU init and the unsupported-browser card), `env.ts` (lighting and sky
 values for `FrameParams`), `voxGrid.ts` (MagicaVoxel model to Y-up dense grid).
