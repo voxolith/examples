@@ -175,6 +175,8 @@ if (app) {
   // Drag turns, right-drag or two fingers pan across the valley, wheel or pinch zooms.
   const orbit = makeOrbitController(input, {
     yaw: 35, pitchLimits: [6, 80], distanceLimits: [90, far * 1.7], fovDeg: 42, pan: "secondary",
+    // A moving view is the one time a render-scale probe cannot be seen.
+    onChange: () => perf.reprobe(),
     panBounds: { minX: 0, maxX: W, minZ: 0, maxZ: D },
     // At night the lamp is the subject: start close, looking down into its glade.
     target: night0 ? [GC[0], heightAt(Math.round(GC[0]), Math.round(GC[1])) + 10, GC[1]] : [W / 2, terrain.params.baseY + 20, D / 2],
@@ -189,6 +191,9 @@ if (app) {
     scale: gpu.renderScale,
     minScale: gpu.software ? 0.25 : 0.35,
     maxSampleMs: 4000,
+    // The water keeps this page rendering while the view is still; never
+    // re-probe then, or each probe shows as a faint resample of the image.
+    retryAfterMs: Infinity,
     label:
       ([adapter.vendor, adapter.architecture, adapter.description].filter(Boolean).join(" · ") || "unknown adapter") +
       `${gpu.software ? " (software)" : ""} · quality ${quality}`,
