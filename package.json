@@ -23,6 +23,7 @@
     "@voxolith/gen-grass": "workspace:*",
     "@voxolith/gen-kit": "workspace:*",
     "@voxolith/gen-rock": "workspace:*",
+    "@voxolith/gen-terrain": "workspace:*",
     "@voxolith/gen-tree": "workspace:*",
     "@voxolith/renderer": "workspace:*"
   },

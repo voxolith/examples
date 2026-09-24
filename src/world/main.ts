@@ -1,23 +1,29 @@
-// village — houses, woods and stones, all from entity generators.
+// world — a valley from the generators: terrain and river, a village, a forest.
 //
-// The forest example's streamed world with a settlement in it. What a village
-// adds over a forest is that entities have to agree with the ground and with
-// each other: a house needs level ground, trees must keep clear of walls and
-// paths, and doors should face somewhere worth walking to.
+// Everything here is generated. `@voxolith/gen-terrain` makes the ground and
+// the river; the entity generators make every tree, shrub, rock and house.
+// What this page adds is the *settlement*: where the village goes, where each
+// house stands, levelled pads, footpaths between the doors, and how the forest
+// thins out around them. That layout is decided once, up front and
+// deterministically, and the chunked world only reads it, so the world still
+// streams in any order.
 //
-// All of that is settled once, up front and deterministically, before a single
-// chunk is built: house sites, their orientation, a levelled pad under each,
-// and the footpaths joining their doors. Chunks then only read those decisions,
-// so the world stays a pure function of position and still streams in any
-// order.
+// The village and the forest are two areas of one map that overlap a little:
+// the woods thin out towards the village, a few trees stand among the houses.
+// A draggable lamp starts in a glade in the forest; N (or the button) runs day
+// into night and back. The water ripples, so the page renders continuously
+// (`?still` freezes it and renders on demand).
 
 import {
   createRenderer,
+  dayNight,
   makeCamera,
   makePerf,
+  makeRay,
   observeResize,
   QUALITY_PRESETS,
   resizeToDisplay,
+  type PointLight,
   type Renderer,
   type Vec3,
 } from "@voxolith/renderer";
@@ -38,27 +44,28 @@ import {
 } from "@voxolith/engine";
 import { makeNoise } from "@voxolith/gen-kit";
 import { makeGeneratorPool } from "@voxolith/engine/worker";
-import { createInput, makeOrbitController, prepareSurface } from "@voxolith/engine/input";
+import { createInput, makeOrbitController, prepareSurface, recogniseGestures } from "@voxolith/engine/input";
+import { generateTerrain } from "@voxolith/gen-terrain";
 import { generateTree, PRESETS as TREES } from "@voxolith/gen-tree";
 import { generateBush, PRESETS as BUSHES } from "@voxolith/gen-bush";
 import { generateGrass, PRESETS as GRASSES } from "@voxolith/gen-grass";
 import { generateRock, PRESETS as ROCKS } from "@voxolith/gen-rock";
 import { generateBuilding, PRESETS as BUILDINGS, type BuildingParams } from "@voxolith/gen-building";
 import { boot, runLoop } from "../shared/boot";
-import { DAYLIGHT } from "../shared/env";
 
-// Same tiling as the forest: one tile is 320 voxels square, `scale` lays out a
-// SPANxSPAN block. The village sits in the middle and scales with the world.
+// One tile is 320 voxels square; `scale` lays out SPANxSPAN of them.
 const params = new URLSearchParams(location.search);
-const SPAN = Math.max(1, Math.min(8, Math.round(Number(params.get("scale") ?? 3))));
+const SPAN = Math.max(1, Math.min(8, Math.round(Number(params.get("scale") ?? 4))));
 const TILE = 320;
 const SIZE = { x: TILE * SPAN, y: 192, z: TILE * SPAN };
-const CX = SIZE.x / 2, CZ = SIZE.z / 2;
-/** Radius of the village core, where houses cluster and the woods thin out. */
-const VILLAGE_R = Math.max(110, 150 * SPAN);
+/** Radius of the village area. */
+const VILLAGE_R = Math.max(100, 70 * SPAN);
+/** Radius of the clearing round the lamp's starting spot. */
+const GLADE = 60;
 
 const seed = hashSeed(params.get("seed") ?? "voxolith");
 const season = (params.get("season") ?? "summer") as "spring" | "summer" | "autumn" | "winter";
+const still = params.has("still");
 const TREE_KINDS = ["oak", "birch", "spruce"] as const;
 const BUSH_KINDS = ["bush", "bramble"] as const;
 const GRASS_KINDS = ["grass", "meadow", "fern"] as const;
@@ -70,41 +77,40 @@ const smooth = (a: number, b: number, x: number) => {
   return t * t * (3 - 2 * t);
 };
 
-const app = await boot("village");
+const app = await boot("world");
 if (app) {
   const { gpu, canvas, info } = app;
   const noise = makeNoise(seed);
 
+  // --- terrain --------------------------------------------------------------
+  // The ground and the river come from the terrain generator; the settlement
+  // below edits its heights in place (levelled pads) before anything is built.
+  const terrain = generateTerrain(
+    {
+      width: SIZE.x, depth: SIZE.z, height: SIZE.y,
+      featureSize: 110 + 25 * SPAN,
+      river: { enabled: true, width: 14 + 3 * SPAN, depth: 5, banks: 16 + 2 * SPAN, meander: 260 + 70 * SPAN },
+    },
+    seed,
+  );
+  const W = terrain.width, D = terrain.depth;
+  const S = terrain.waterLevel - 1; // top water voxel
+  const heightAt = (x: number, z: number) => terrain.heights[x + z * W];
+
   // --- palette ----------------------------------------------------------------
-  // Every species takes its own slot range. The budget is tight with houses in
-  // it (each house style is 32 roles), which is why the species lists are short
-  // and the three rock styles share one granite skin.
+  // Every species takes its own slot range; each house style is 32 roles, so
+  // the lists are short and the three granite rock styles share one range.
   const palette = new PaletteAllocator(1);
-  const ground: Role[] = [
-    { id: "ground.grass", name: "Turf", color: [0.29, 0.42, 0.21] },
-    { id: "ground.grass2", name: "Turf light", color: [0.35, 0.48, 0.24] },
-    { id: "ground.dirt", name: "Soil", color: [0.31, 0.24, 0.17] },
-    { id: "ground.rock", name: "Rock", color: [0.42, 0.41, 0.39] },
-    { id: "ground.path", name: "Path", color: [0.46, 0.38, 0.27] },
-    { id: "ground.path2", name: "Path worn", color: [0.53, 0.46, 0.34] },
-    { id: "ground.yard", name: "Trodden turf", color: [0.36, 0.42, 0.24] },
+  const { base: terrainBase } = palette.allocate(terrain.roles, "terrain");
+  const settlement: Role[] = [
+    { id: "path", name: "Path", color: [0.46, 0.38, 0.27] },
+    { id: "path.worn", name: "Path worn", color: [0.53, 0.46, 0.34] },
+    { id: "yard", name: "Trodden turf", color: [0.36, 0.42, 0.24] },
   ];
-  const { base: g0 } = palette.allocate(ground, "ground");
-  const TURF = g0, TURF2 = g0 + 1, SOIL = g0 + 2, ROCK = g0 + 3, PATH = g0 + 4, PATH2 = g0 + 5, YARD = g0 + 6;
+  const { base: s0 } = palette.allocate(settlement, "settlement");
+  const PATH = s0, PATH2 = s0 + 1, YARD = s0 + 2;
 
-  // --- height -------------------------------------------------------------------
-  const BASE_Y = 12;
-  const height = new Int16Array(SIZE.x * SIZE.z);
-  for (let z = 0; z < SIZE.z; z++)
-    for (let x = 0; x < SIZE.x; x++) {
-      const h =
-        BASE_Y +
-        Math.round(noise.fbm2(x * 0.01, z * 0.01, 3) * 16 - 6) +
-        Math.round(noise.fbm2(x * 0.05, z * 0.05, 2) * 3);
-      height[x + z * SIZE.x] = Math.max(3, h);
-    }
-
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette() });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   const quality = gpu.software ? "low" : "medium";
   renderer.setQuality({
@@ -112,16 +118,63 @@ if (app) {
     maxSteps: Math.min(4096, QUALITY_PRESETS[quality].maxSteps * SPAN),
   });
 
-  // --- camera ---------------------------------------------------------------------
-  const target: Vec3 = [CX, BASE_Y + 30, CZ];
+  // --- where things go -----------------------------------------------------------
+  /** Fraction of dry, gently sloping columns in a disc, sampled coarsely. */
+  const buildable = (cx: number, cz: number, r: number) => {
+    let good = 0, n = 0;
+    for (let a = 0; a < 24; a++)
+      for (const k of [0.3, 0.65, 1]) {
+        const x = Math.round(cx + Math.cos((a / 24) * Math.PI * 2) * r * k);
+        const z = Math.round(cz + Math.sin((a / 24) * Math.PI * 2) * r * k);
+        n++;
+        if (x < 1 || z < 1 || x >= W - 1 || z >= D - 1) continue;
+        const h = heightAt(x, z);
+        if (h > S + 1 && Math.abs(h - heightAt(x + 4 < W ? x + 4 : x, z)) <= 2) good++;
+      }
+    return good / n;
+  };
+  const waterWithin = (cx: number, cz: number, r: number) => {
+    for (let a = 0; a < 32; a++) {
+      const x = Math.round(cx + Math.cos((a / 32) * Math.PI * 2) * r), z = Math.round(cz + Math.sin((a / 32) * Math.PI * 2) * r);
+      if (x >= 0 && z >= 0 && x < W && z < D && terrain.waterAt(x, z)) return true;
+    }
+    return false;
+  };
+  /** Best spot in a search box: dry and flat, optionally near water, away from `avoid`. */
+  const findSpot = (x0: number, x1: number, z0: number, z1: number, r: number, nearWater: boolean, avoid?: [number, number], minDist = 0): [number, number] => {
+    let best: [number, number] = [(x0 + x1) / 2, (z0 + z1) / 2], bestScore = -Infinity;
+    const step = Math.max(12, Math.round(r / 5));
+    for (let z = z0; z <= z1; z += step)
+      for (let x = x0; x <= x1; x += step) {
+        if (avoid && Math.hypot(x - avoid[0], z - avoid[1]) < minDist) continue;
+        let score = buildable(x, z, r);
+        if (nearWater && waterWithin(x, z, r * 1.25)) score += 0.25;
+        score -= Math.hypot(x - (x0 + x1) / 2, z - (z0 + z1) / 2) / (W * 4); // prefer the box centre
+        if (score > bestScore) { bestScore = score; best = [x, z]; }
+      }
+    return best;
+  };
+  // The village on one side of the map, near the river; the lamp's glade on the other.
+  const VC = findSpot(W * 0.22, W * 0.5, D * 0.3, D * 0.7, VILLAGE_R * 0.6, true);
+  const GC = findSpot(W * 0.55, W * 0.85, D * 0.25, D * 0.75, GLADE, false, VC, VILLAGE_R * 1.6);
+  const dVillage = (x: number, z: number) => Math.hypot(x - VC[0], z - VC[1]);
+
+  // --- camera and loop -----------------------------------------------------------
   const far = 430 * SPAN;
-  const camera = makeCamera({ target, distance: far, pitchDeg: 30, fovDeg: 42 });
-  // Drag to turn, wheel or pinch to zoom. Every input event requests a frame.
-  prepareSurface(canvas);
+  const night0 = params.get("time") === "night";
+  const camera = makeCamera({ target: [W / 2, 40, D / 2], distance: far, pitchDeg: 24, fovDeg: 42 });
+  prepareSurface(canvas, { contextMenu: false });
   const input = createInput(canvas, { loop: { invalidate: () => loop.invalidate() } });
+  // Drag turns, right-drag or two fingers pan across the valley, wheel or pinch zooms.
   const orbit = makeOrbitController(input, {
-    yaw: 35, pitch: 30, pitchLimits: [6, 80], distance: Math.max(300, VILLAGE_R * 2.9), distanceLimits: [90, far * 1.7], fovDeg: 42,
+    yaw: 35, pitchLimits: [6, 80], distanceLimits: [90, far * 1.7], fovDeg: 42, pan: "secondary",
+    panBounds: { minX: 0, maxX: W, minZ: 0, maxZ: D },
+    // At night the lamp is the subject: start close, looking down into its glade.
+    target: night0 ? [GC[0], heightAt(Math.round(GC[0]), Math.round(GC[1])) + 10, GC[1]] : [W / 2, terrain.params.baseY + 20, D / 2],
+    pitch: night0 ? 42 : 24,
+    distance: night0 ? Math.min(far, 260) : far,
   });
+  const frame = () => camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch());
 
   const adapter = gpu.adapterInfo;
   const perf = makePerf({
@@ -134,28 +187,31 @@ if (app) {
       `${gpu.software ? " (software)" : ""} · quality ${quality}`,
   });
 
+  // Time of day: 0.5 is noon, 1.0 midnight. A toggle always runs forwards.
+  const TRANSITION_S = 2.5;
+  let phase = night0 ? 1.0 : 0.5;
+  let phaseTarget = phase;
   let spin = true;
   let streamWorld: (() => void) | null = null;
+  const wantContinuous = () => !still || spin || phase < phaseTarget;
   const loop = runLoop((now, dt) => {
     streamWorld?.();
     perf.frame(now);
     gpu.renderScale = perf.scale();
     resizeToDisplay(gpu);
-    // The idle turntable turns the controller itself, so stopping it never jumps.
-    if (spin) orbit.set({ yaw: orbit.yaw() + dt * 3.12 });
-    renderer.render({ ...camera(orbit.yaw(), orbit.distance(), target, orbit.pitch()), ...DAYLIGHT });
+    if (spin) orbit.set({ yaw: orbit.yaw() + dt * 3.2 });
+    if (phase < phaseTarget) phase = Math.min(phaseTarget, phase + dt * (0.5 / TRANSITION_S));
+    loop.setContinuous(wantContinuous());
+    renderer.render({ ...frame(), ...dayNight(phase), time: still ? 0 : now / 1000 });
   }, true);
   observeResize(canvas, loop);
-  // Any touch stops the slow turntable.
   input.on((e) => {
     if (e.kind !== "pointer" || e.phase !== "down" || !spin) return;
     spin = false;
-    loop.setContinuous(false);
+    loop.setContinuous(wantContinuous());
   });
 
   // --- species ----------------------------------------------------------------------
-  // As in the forest: a handful of variants per species, generated on workers,
-  // then placed many times in any of the eight axis-aligned orientations.
   const VARIANTS = Math.max(1, Number(params.get("variants") ?? 10));
   const HOUSE_VARIANTS = 4;
   const useWorkers = params.get("workers") !== "0";
@@ -238,8 +294,6 @@ if (app) {
         return p;
       };
       return {
-        // The palette key is the skin, not the preset: boulder, mossy and
-        // pebbles are all granite and can share one range.
         key: `rock:${ROCKS[kind].species}:${kind}`,
         generator: kind === "outcrop" ? "voxolith/outcrop" : "voxolith/rock",
         count: Math.min(VARIANTS, 6),
@@ -255,6 +309,7 @@ if (app) {
       make: (n) => generateBuilding(house(kind, n), seededRandom(seed + 17000 + n * 389)).entity,
     })),
   ];
+  // Rock styles that share a skin share one palette range.
   const paletteKey = (key: string) => (key.startsWith("rock:") ? key.split(":").slice(0, 2).join(":") : key);
 
   const pools = new Map<string, VariantPool>();
@@ -288,7 +343,7 @@ if (app) {
         for (const sp of species) { adopt(sp, out.slice(i, i + sp.count)); i += sp.count; }
         return out.length;
       } catch (err) {
-        console.warn("[village] worker generation failed, falling back to the main thread:", err);
+        console.warn("[world] worker generation failed, falling back to the main thread:", err);
       } finally {
         workers.destroy();
       }
@@ -306,10 +361,10 @@ if (app) {
   info.textContent = "laying out the village";
 
   // --- houses ---------------------------------------------------------------------------
-  // Sites come from a coarse jittered grid, dense near the middle and sparse
-  // outside, so there is a village and a few outlying farms. Each is turned so
-  // its door faces the village centre, then accepted only if it clears the ones
-  // already placed. All of it is one deterministic pass over the whole world.
+  // Sites come from a coarse jittered grid, dense in the village and rare
+  // outside (a few outlying farms). Each is turned so its door faces the
+  // village centre and accepted only on dry ground clear of the water and of
+  // the houses already placed.
   interface House {
     entity: Entity;
     orientation: Orientation;
@@ -334,17 +389,25 @@ if (app) {
     }
     return [sx / 2, sz + 3];
   };
+  /** Dry ground under the whole box, with a margin from the water. */
+  const dryBox = (x0: number, z0: number, x1: number, z1: number, m: number) => {
+    for (let z = z0 - m; z <= z1 + m; z += 3)
+      for (let x = x0 - m; x <= x1 + m; x += 3) {
+        if (x < 0 || z < 0 || x >= W || z >= D) return false;
+        if (heightAt(x, z) <= S + 1) return false;
+      }
+    return true;
+  };
 
   const houses: House[] = [];
   {
     const candidates: { x: number; z: number; rng: () => number; d: number }[] = [];
-    scatterRegion({ cell: 140, seed, salt: 21, jitter: 0.3 }, 0, 0, SIZE.x - 1, SIZE.z - 1, (pt) => {
-      const d = Math.hypot(pt.x - CX, pt.z - CZ);
-      const chance = 0.72 * (1 - smooth(VILLAGE_R * 0.7, VILLAGE_R * 1.2, d)) + 0.1;
+    scatterRegion({ cell: 90, seed, salt: 21, jitter: 0.3 }, 0, 0, W - 1, D - 1, (pt) => {
+      const d = dVillage(pt.x, pt.z);
+      const chance = 0.8 * (1 - smooth(VILLAGE_R * 0.6, VILLAGE_R * 1.1, d)) + 0.04;
       if (pt.rng() > chance) return;
       candidates.push({ x: pt.x, z: pt.z, rng: pt.rng, d });
     });
-    // Nearest the centre first, so the core fills before the outskirts.
     candidates.sort((a, b) => a.d - b.d || a.x - b.x || a.z - b.z);
     for (const c of candidates) {
       const r = c.rng();
@@ -354,9 +417,7 @@ if (app) {
       const entity = list[Math.floor(c.rng() * list.length) % list.length];
       const door = doorOf(entity);
       const { anchor, size } = entity.model;
-      // Four yaws (and a mirror for variety): keep the one whose door looks
-      // most towards the centre, or anywhere for the house at the centre.
-      const toC = [CX - c.x, CZ - c.z];
+      const toC = [VC[0] - c.x, VC[1] - c.z];
       const lenC = Math.hypot(toC[0], toC[1]) || 1;
       let best: Orientation = 0, bestDot = -Infinity;
       const mirror = c.rng() < 0.5 ? 4 : 0;
@@ -372,41 +433,42 @@ if (app) {
       const os = orientedSize(size, best);
       const x0 = Math.round(c.x - a[0]), z0 = Math.round(c.z - a[2]);
       const x1 = x0 + os.x - 1, z1 = z0 + os.z - 1;
-      if (x0 < 12 || z0 < 12 || x1 >= SIZE.x - 12 || z1 >= SIZE.z - 12) continue;
-      const gap = 14;
+      if (x0 < 12 || z0 < 12 || x1 >= W - 12 || z1 >= D - 12) continue;
+      if (!dryBox(x0, z0, x1, z1, 4)) continue;
+      if (Math.hypot(c.x - GC[0], c.z - GC[1]) < GLADE + 60) continue;
+      const gap = 12;
       if (houses.some((h) => x0 - gap < h.x1 && x1 + gap > h.x0 && z0 - gap < h.z1 && z1 + gap > h.z0)) continue;
       const dp = orientVoxel(best, door[0], 0, door[1], size, [0, 0, 0]);
       houses.push({ entity, orientation: best, x: c.x, z: c.z, y: 0, x0, z0, x1, z1, door: [x0 + dp[0], z0 + dp[2]], key });
     }
   }
 
-  // Level a pad under each house at its average ground height, and blend the
-  // terrain back to its own shape over a short apron. A trodden yard marks it.
-  const surface = new Uint8Array(SIZE.x * SIZE.z); // 0 turf, 1 yard, 2 path
+  // Level a pad under each house at its average ground height, blending the
+  // terrain back over a short apron. A trodden yard marks it.
+  const surface = new Uint8Array(W * D); // 0 terrain, 1 yard, 2 path
   const APRON = 14;
   for (const h of houses) {
     let sum = 0, n = 0;
-    for (let z = h.z0; z <= h.z1; z++) for (let x = h.x0; x <= h.x1; x++) { sum += height[x + z * SIZE.x]; n++; }
+    for (let z = h.z0; z <= h.z1; z++) for (let x = h.x0; x <= h.x1; x++) { sum += heightAt(x, z); n++; }
     const pad = Math.round(sum / n);
     h.y = pad + 1;
     for (let z = h.z0 - APRON; z <= h.z1 + APRON; z++)
       for (let x = h.x0 - APRON; x <= h.x1 + APRON; x++) {
-        if (x < 0 || z < 0 || x >= SIZE.x || z >= SIZE.z) continue;
+        if (x < 0 || z < 0 || x >= W || z >= D) continue;
         const ex = Math.max(h.x0 - x, 0, x - h.x1), ez = Math.max(h.z0 - z, 0, z - h.z1);
         const e = Math.hypot(ex, ez);
         if (e > APRON) continue;
-        const i = x + z * SIZE.x;
+        const i = x + z * W;
         const w = 1 - smooth(2, APRON, e);
-        height[i] = Math.round(pad * w + height[i] * (1 - w));
+        terrain.heights[i] = Math.round(pad * w + terrain.heights[i] * (1 - w));
         if (e > 0 && e < 6 && noise.value2(x * 0.2, z * 0.2) > 0.35) surface[i] = Math.max(surface[i], 1);
       }
   }
 
-  // Footpaths: a minimum spanning tree over the doors, so every house is on
-  // the network by the shortest total length. A path wanders a little and
-  // never runs through a house.
+  // Footpaths: a minimum spanning tree over the doors. A path wanders a little,
+  // never runs through a house, and fords the river (it is not drawn on water).
   const inHouse = (x: number, z: number, m = 0) => houses.some((h) => x >= h.x0 - m && x <= h.x1 + m && z >= h.z0 - m && z <= h.z1 + m);
-  const pathNear = new Uint8Array(SIZE.x * SIZE.z);
+  const pathNear = new Uint8Array(W * D);
   {
     const pts = houses.map((h) => h.door);
     const inTree = new Uint8Array(pts.length);
@@ -430,8 +492,9 @@ if (app) {
         for (let dx = -r; dx <= r; dx++) {
           if (dx * dx + dz * dz > r * r + r) continue;
           const x = Math.round(cx + dx), z = Math.round(cz + dz);
-          if (x < 0 || z < 0 || x >= SIZE.x || z >= SIZE.z) continue;
-          mask[x + z * SIZE.x] = Math.max(mask[x + z * SIZE.x], v);
+          if (x < 0 || z < 0 || x >= W || z >= D) continue;
+          if (v === 2 && terrain.waterAt(x, z)) continue;
+          mask[x + z * W] = Math.max(mask[x + z * W], v);
         }
     };
     for (const [i, j] of edges) {
@@ -441,7 +504,6 @@ if (app) {
       const steps = Math.ceil(len);
       for (let s = 0; s <= steps; s++) {
         const t = s / steps;
-        // Sway sideways, fading to zero at both doors.
         const sway = (noise.value2(i * 7.1 + t * len * 0.02, j * 3.3) - 0.5) * Math.min(40, len * 0.25) * Math.sin(Math.PI * t);
         const x = ax + (bx - ax) * t + nx * sway, z = az + (bz - az) * t + nz * sway;
         if (inHouse(Math.round(x), Math.round(z), 1)) continue;
@@ -450,8 +512,14 @@ if (app) {
       }
     }
   }
-  let maxH = 0;
-  for (let i = 0; i < height.length; i++) if (height[i] > maxH) maxH = height[i];
+  const maxY = terrain.maxY();
+  /** The settlement's surface over the terrain's: paths and yards. */
+  const topOverride = (x: number, z: number) => {
+    const s = surface[x + z * W];
+    if (s === 2) return noise.value2(x * 0.3, z * 0.3) > 0.55 ? PATH2 : PATH;
+    if (s === 1) return YARD;
+    return 0;
+  };
 
   // --- the world --------------------------------------------------------------------------
   const counted = new Map<Entity, number>();
@@ -463,17 +531,19 @@ if (app) {
 
   const CHUNK = 64;
   /**
-   * `clear` is how far the root must stay from any wall; `open` how the layer
-   * thins towards the village centre (0 = untouched, 1 = gone at the centre).
+   * `clear` is how far a root stays from any wall; `open` how much the layer
+   * thins inside the village (1 = gone at its centre). The overlap is the band
+   * between half the village radius and a little past its edge, where the
+   * woods fade in.
    */
   const LAYERS = [
-    { key: "tree", kinds: TREE_KINDS, cell: 88, salt: 1, margin: 80, chance: 0.92, clear: 26, open: 0.85 },
-    { key: "bush", kinds: BUSH_KINDS, cell: 64, salt: 2, margin: 36, chance: 0.9, clear: 8, open: 0.4 },
-    { key: "rock", kinds: ROCK_KINDS, cell: 96, salt: 4, margin: 48, chance: 0.55, clear: 10, open: 0.3 },
-    { key: "grass", kinds: GRASS_KINDS, cell: 50, salt: 3, margin: 24, chance: 0.9, clear: 2, open: 0 },
+    { key: "tree", kinds: TREE_KINDS, cell: 88, salt: 1, margin: 80, chance: 0.92, clear: 26, open: 0.88, glade: GLADE },
+    { key: "bush", kinds: BUSH_KINDS, cell: 64, salt: 2, margin: 36, chance: 0.9, clear: 8, open: 0.45, glade: GLADE * 0.6 },
+    { key: "rock", kinds: ROCK_KINDS, cell: 96, salt: 4, margin: 48, chance: 0.55, clear: 10, open: 0.3, glade: GLADE * 0.6 },
+    { key: "grass", kinds: GRASS_KINDS, cell: 50, salt: 3, margin: 24, chance: 0.9, clear: 2, open: 0, glade: 0 },
   ] as const;
 
-  let voxels = 0, placed = 0, housesPlaced = 0, rocksPlaced = 0;
+  let voxels = 0, placed = 0, housesPlaced = 0, rocksPlaced = 0, treesPlaced = 0;
   let lastPaletteSize = -1;
   const allocate = (e: Entity, key: string) => {
     const { base } = palette.allocateFor(e, paletteKey(key));
@@ -492,30 +562,8 @@ if (app) {
     chunk: CHUNK,
     seed,
     generate(ctx) {
-      ctx.edit({ ...ctx.box, y1: maxH }, (cells, ox, oy, oz) => {
-        let touched = false;
-        for (let lz = 0; lz < 8; lz++) {
-          const wz = oz + lz;
-          if (wz >= SIZE.z) break;
-          for (let lx = 0; lx < 8; lx++) {
-            const wx = ox + lx;
-            if (wx >= SIZE.x) break;
-            const i = wx + wz * SIZE.x;
-            const h = height[i];
-            const top = Math.min(h, oy + 7);
-            const surf = surface[i];
-            const n = noise.value2(wx * 0.3, wz * 0.3);
-            const topRole = surf === 2 ? (n > 0.55 ? PATH2 : PATH) : surf === 1 ? YARD : n > 0.5 ? TURF : TURF2;
-            for (let wy = oy; wy <= top; wy++) {
-              cells[lx + (wy - oy) * 8 + lz * 64] = wy === h ? topRole : wy > h - 3 ? SOIL : ROCK;
-              touched = true;
-            }
-          }
-        }
-        return touched;
-      });
+      ctx.edit({ ...ctx.box, y1: maxY }, (cells, ox, oy, oz) => terrain.fillBrick(cells, ox, oy, oz, terrainBase, topOverride));
 
-      // Houses first: each chunk stamps the part of every house that reaches it.
       for (const hs of houses) {
         if (hs.x1 < ctx.box.x0 || hs.x0 > ctx.box.x1 || hs.z1 < ctx.box.z0 || hs.z0 > ctx.box.z1) continue;
         ctx.blit(hs.entity.model, { x: hs.x, y: hs.y, z: hs.z }, allocate(hs.entity, hs.key), hs.orientation);
@@ -531,21 +579,23 @@ if (app) {
           ctx.box.x0 - layer.margin, ctx.box.z0 - layer.margin,
           ctx.box.x1 + layer.margin, ctx.box.z1 + layer.margin,
           (pt) => {
-            if (pt.x < 0 || pt.z < 0 || pt.x >= SIZE.x || pt.z >= SIZE.z) return;
-            const d = Math.hypot(pt.x - CX, pt.z - CZ);
-            const thin = layer.open * (1 - smooth(VILLAGE_R * 0.5, VILLAGE_R * 1.2, d));
+            if (pt.x < 0 || pt.z < 0 || pt.x >= W || pt.z >= D) return;
+            const thin = layer.open * (1 - smooth(VILLAGE_R * 0.5, VILLAGE_R * 1.15, dVillage(pt.x, pt.z)));
             if (pt.rng() > layer.chance * (1 - thin)) return;
-            const i = pt.x + pt.z * SIZE.x;
+            if (layer.glade && Math.hypot(pt.x - GC[0], pt.z - GC[1]) < layer.glade) return;
+            const i = pt.x + pt.z * W;
+            // Only rocks stand in the water, and only where it is shallow.
+            if (terrain.waterAt(pt.x, pt.z) && (layer.key !== "rock" || terrain.waterDepth(pt.x, pt.z) > 2)) return;
             if (surface[i] === 2 || pathNear[i]) return;
             if (inHouse(pt.x, pt.z, layer.clear)) return;
             const kind = layer.kinds[Math.min(layer.kinds.length - 1, (pt.rng() * layer.kinds.length) | 0)];
-            const key =
-              layer.key === "rock" ? `rock:${ROCKS[kind].species}:${kind}` : `${layer.key}:${kind}:${season}`;
+            const key = layer.key === "rock" ? `rock:${ROCKS[kind].species}:${kind}` : `${layer.key}:${kind}:${season}`;
             const v = pools.get(key)!.at((pt.rng() * 1e6) | 0, pt.rng);
-            ctx.blit(v.entity.model, { x: pt.x, y: height[i] + 1, z: pt.z }, allocate(v.entity, key), v.orientation);
+            ctx.blit(v.entity.model, { x: pt.x, y: heightAt(pt.x, pt.z) + 1, z: pt.z }, allocate(v.entity, key), v.orientation);
             if (pt.x >= ctx.box.x0 && pt.x <= ctx.box.x1 && pt.z >= ctx.box.z0 && pt.z <= ctx.box.z1) {
               placed++;
               if (layer.key === "rock") rocksPlaced++;
+              if (layer.key === "tree") treesPlaced++;
               voxels += sizeOf(v.entity);
             }
           },
@@ -554,8 +604,121 @@ if (app) {
     },
   });
 
+  // --- lamp ---------------------------------------------------------------------
+  // A point light you can pick up and carry: it lights the ground and trunks
+  // around it and casts moving shadows through them. Grab it near its glow;
+  // double-click or double-tap the ground to drop it there.
+  const HOVER = 7;
+  const lamp: Vec3 = [GC[0], 0, GC[1]];
+  const standAt = (x: number, z: number) =>
+    Math.max(heightAt(Math.max(0, Math.min(W - 1, Math.round(x))), Math.max(0, Math.min(D - 1, Math.round(z)))), S) + HOVER;
+  lamp[1] = standAt(lamp[0], lamp[2]);
+  const updateLamp = () => {
+    const lights: PointLight[] = [
+      { position: lamp, color: [1.0, 0.7, 0.38], intensity: 2.6, range: 90, glow: 3.5 },
+      // A soft unshadowed spill, so light still reaches just round a trunk.
+      { position: lamp, color: [1.0, 0.75, 0.45], intensity: 0.25, range: 50, shadows: false },
+    ];
+    renderer.setLights(lights);
+    loop.invalidate();
+  };
+  updateLamp();
+
+  const lampOnScreen = (): [number, number] | null => {
+    const f = frame();
+    const v: Vec3 = [lamp[0] - f.camPos[0], lamp[1] - f.camPos[1], lamp[2] - f.camPos[2]];
+    const z = v[0] * f.camFwd[0] + v[1] * f.camFwd[1] + v[2] * f.camFwd[2];
+    if (z <= 0) return null;
+    const x = (v[0] * f.camRight[0] + v[1] * f.camRight[1] + v[2] * f.camRight[2]) / z;
+    const y = (v[0] * f.camUp[0] + v[1] * f.camUp[1] + v[2] * f.camUp[2]) / z;
+    const rect = canvas.getBoundingClientRect();
+    const aspect = canvas.width / canvas.height;
+    return [
+      rect.left + ((x / (aspect * f.tanHalfFov) + 1) / 2) * rect.width,
+      rect.top + ((1 - y / f.tanHalfFov) / 2) * rect.height,
+    ];
+  };
+  const moveLampTo = (clientX: number, clientY: number) => {
+    const { origin, dir } = makeRay(canvas, frame(), clientX, clientY);
+    const hit = terrain.pick(origin, dir, { water: true });
+    if (!hit) return;
+    lamp[0] = hit[0];
+    lamp[2] = hit[2];
+    lamp[1] = standAt(hit[0], hit[2]);
+    updateLamp();
+  };
+  const nearLamp = (x: number, y: number) => {
+    const s = lampOnScreen();
+    return !!s && Math.hypot(x - s[0], y - s[1]) < 32;
+  };
+  // Grabbing the lamp claims the pointer first (priority 10), so the orbit
+  // controller leaves that drag alone.
+  const lampOwner = {};
+  input.on((e) => {
+    if (e.kind !== "pointer") return;
+    const p = e.pointer;
+    if (e.phase === "down") {
+      if ((p.type !== "mouse" || p.button === 0) && nearLamp(p.x, p.y) && input.claim(p.id, lampOwner)) canvas.style.cursor = "grabbing";
+    } else if (input.claimedBy(p.id) === lampOwner) {
+      if (e.phase === "move") moveLampTo(p.x, p.y);
+      else canvas.style.cursor = "";
+    }
+  }, 10);
+  // Hover feedback only; the input tracks pressed pointers, not a hovering mouse.
+  canvas.addEventListener("pointermove", (e) => {
+    if (e.pointerType === "mouse" && e.buttons === 0) canvas.style.cursor = nearLamp(e.clientX, e.clientY) ? "grab" : "";
+  });
+  recogniseGestures(input, { doubleTap: (t) => moveLampTo(t.x, t.y) });
+  // For the end-to-end checks (tools/input-e2e.ts): where the lamp is drawn.
+  if (params.has("e2e")) {
+    Object.assign(window, {
+      worldLamp: () => lampOnScreen(),
+      worldPlaces: {
+        village: VC,
+        glade: GC,
+        // The water column nearest the village, for looking at the river.
+        water: (() => {
+          let best: [number, number] = VC, bd = Infinity;
+          for (let z = 0; z < D; z += 4) for (let x = 0; x < W; x += 4) {
+            if (!terrain.waterAt(x, z) || terrain.waterDepth(x, z) < 4) continue;
+            const d = Math.hypot(x - VC[0], z - VC[1]);
+            if (d < bd) { bd = d; best = [x, z]; }
+          }
+          return best;
+        })(),
+      },
+      worldLook: (x: number, z: number, distance: number, pitch: number, yaw?: number) => {
+        spin = false;
+        orbit.set({ target: [x, heightAt(Math.round(x), Math.round(z)) + 8, z], distance, pitch, ...(yaw === undefined ? {} : { yaw }) });
+      },
+    });
+  }
+
+  // --- day and night ------------------------------------------------------------
+  const timeBtn = document.getElementById("time-toggle") as HTMLButtonElement | null;
+  const isNight = () => Math.round(phaseTarget * 2) % 2 === 0;
+  const syncButton = () => {
+    if (!timeBtn) return;
+    timeBtn.textContent = isNight() ? "Day" : "Night";
+    timeBtn.title = isNight() ? "Switch to day (N)" : "Switch to night (N)";
+  };
+  const toggleTime = () => {
+    phaseTarget = Math.floor(phaseTarget * 2 + 1e-6) / 2 + 0.5;
+    if (phase > phaseTarget) phase = phaseTarget - 0.5;
+    syncButton();
+    loop.setContinuous(true);
+  };
+  timeBtn?.addEventListener("click", toggleTime);
+  input.captureKeys(["KeyN"]);
+  input.on((e) => {
+    if (e.kind === "key" && e.phase === "down" && e.code === "KeyN" && !e.repeat) toggleTime();
+  });
+  syncButton();
+
+  // --- build and stream ---------------------------------------------------------
   const RADIUS = Number(params.get("radius") ?? SIZE.x * 1.5);
-  world.focus(CX, CZ, RADIUS);
+  const tgt = () => orbit.target();
+  world.focus(tgt()[0], tgt()[2], RADIUS);
   const totalChunks = world.pending;
   while (world.pending) {
     const left = world.step(12);
@@ -563,15 +726,16 @@ if (app) {
     loop.invalidate();
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
   }
-
-  let focusX = target[0], focusZ = target[2];
+  // Keep the world following the view as it pans, at a bounded cost.
+  let focusX = tgt()[0], focusZ = tgt()[2];
   streamWorld = () => {
-    if (Math.abs(target[0] - focusX) < CHUNK / 2 && Math.abs(target[2] - focusZ) < CHUNK / 2) {
+    const [tx, , tz] = tgt();
+    if (Math.abs(tx - focusX) < CHUNK / 2 && Math.abs(tz - focusZ) < CHUNK / 2) {
       if (world.pending) world.step(4);
       return;
     }
-    focusX = target[0];
-    focusZ = target[2];
+    focusX = tx;
+    focusZ = tz;
     world.focus(focusX, focusZ, RADIUS);
     world.step(4);
   };
@@ -579,8 +743,9 @@ if (app) {
   const secs = ((performance.now() - t0) / 1000).toFixed(1);
   const mem = renderer.stats();
   info.textContent =
-    `${housesPlaced} houses, ${rocksPlaced} rocks, ${placed - rocksPlaced} plants from ${modelCount} models · ` +
+    `${housesPlaced} houses, ${treesPlaced} trees, ${rocksPlaced} rocks, ${placed - rocksPlaced - treesPlaced} other plants from ${modelCount} models · ` +
     `${(tModels / 1000).toFixed(1)}s gen, ${secs}s total · ${(voxels / 1000).toFixed(0)}k voxels · ` +
-    `${palette.used}/255 palette slots · ${(mem.bytes / 1048576).toFixed(0)} MB of bricks · drag to orbit, wheel to zoom`;
+    `${palette.used}/255 palette slots · ${(mem.bytes / 1048576).toFixed(0)} MB of bricks · ` +
+    `drag the lamp · N for night/day · drag to turn, right-drag to pan, wheel to zoom`;
   loop.invalidate();
 }
