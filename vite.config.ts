@@ -21,6 +21,7 @@ export default defineConfig({
         orbit: page("orbit/index.html"),
         "minecraft-region": page("minecraft-region/index.html"),
         world: page("world/index.html"),
+        creature: page("creature/index.html"),
       },
     },
   },
