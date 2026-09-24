@@ -20,6 +20,10 @@ html, body {
   border-radius: 7px; padding: 3px 10px; cursor: pointer; white-space: nowrap;
 }
 #hud .time-toggle:hover { border-color: var(--accent); }
+#hud .weather-select {
+  font: inherit; color: var(--text); background: var(--control); border: 1px solid var(--border);
+  border-radius: 7px; padding: 3px 6px; cursor: pointer;
+}
 .drop #app { outline: 3px dashed var(--drop); outline-offset: -8px; }
 
 /* Landing page */

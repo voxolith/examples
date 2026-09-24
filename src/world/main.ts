@@ -16,7 +16,6 @@
 
 import {
   createRenderer,
-  dayNight,
   makeCamera,
   makePerf,
   makeRay,
@@ -46,6 +45,14 @@ import { makeNoise } from "@voxolith/gen-kit";
 import { makeGeneratorPool } from "@voxolith/engine/worker";
 import { createInput, makeOrbitController, prepareSurface, recogniseGestures } from "@voxolith/engine/input";
 import { generateTerrain } from "@voxolith/gen-terrain";
+import {
+  approach,
+  atmosphereFrame,
+  ATMOSPHERES,
+  makeAtmosphereTransition,
+  timeOfDay,
+  type AtmosphereName,
+} from "@voxolith/engine/atmosphere";
 import { generateTree, PRESETS as TREES } from "@voxolith/gen-tree";
 import { generateBush, PRESETS as BUSHES } from "@voxolith/gen-bush";
 import { generateGrass, PRESETS as GRASSES } from "@voxolith/gen-grass";
@@ -191,9 +198,30 @@ if (app) {
   const TRANSITION_S = 2.5;
   let phase = night0 ? 1.0 : 0.5;
   let phaseTarget = phase;
+
+  // Weather. The engine only describes and blends it; the rules are this
+  // page's: rain wets the ground and it dries slowly afterwards, snow settles
+  // while it falls and melts in rain or clear weather.
+  const WEATHERS: AtmosphereName[] = ["clear", "cloudy", "rain", "storm", "snow", "fog"];
+  const w0 = (params.get("weather") ?? "clear") as AtmosphereName;
+  let weatherName: AtmosphereName = w0 in ATMOSPHERES ? w0 : "clear";
+  const weather = makeAtmosphereTransition(ATMOSPHERES[weatherName]);
+  // Start already soaked or snowed-in when the page opens that way.
+  let wetness = weatherName === "rain" || weatherName === "storm" ? 0.8 : 0;
+  let snowCover = weatherName === "snow" ? 0.75 : 0;
+  const stepGround = (dt: number) => {
+    const w = weather.current();
+    const p = w.precipitation;
+    const raining = p.kind === "rain" ? p.intensity : 0;
+    const snowing = p.kind === "snow" ? p.intensity : 0;
+    wetness = raining > 0 ? approach(wetness, 1, 0.12 * raining, dt) : approach(wetness, 0, 0.02, dt);
+    if (snowing > 0) snowCover = approach(snowCover, 0.9, 0.05 * snowing, dt);
+    else snowCover = approach(snowCover, 0, raining > 0 ? 0.05 : 0.012, dt);
+  };
+  const settling = () => weather.changing() || (wetness > 0 && weather.current().precipitation.kind !== "rain") || (snowCover > 0 && weather.current().precipitation.kind !== "snow") || weather.current().precipitation.intensity > 0;
   let spin = true;
   let streamWorld: (() => void) | null = null;
-  const wantContinuous = () => !still || spin || phase < phaseTarget;
+  const wantContinuous = () => !still || spin || phase < phaseTarget || settling();
   const loop = runLoop((now, dt) => {
     streamWorld?.();
     perf.frame(now);
@@ -202,7 +230,10 @@ if (app) {
     if (spin) orbit.set({ yaw: orbit.yaw() + dt * 3.2 });
     if (phase < phaseTarget) phase = Math.min(phaseTarget, phase + dt * (0.5 / TRANSITION_S));
     loop.setContinuous(wantContinuous());
-    renderer.render({ ...frame(), ...dayNight(phase), time: still ? 0 : now / 1000 });
+    const sky = weather.update(dt);
+    stepGround(dt);
+    const atm = atmosphereFrame(timeOfDay(phase), { ...sky, wetness, cover: snowCover });
+    renderer.render({ ...frame(), ...atm, time: still ? 0 : now / 1000 });
   }, true);
   observeResize(canvas, loop);
   input.on((e) => {
@@ -673,6 +704,8 @@ if (app) {
   if (params.has("e2e")) {
     Object.assign(window, {
       worldLamp: () => lampOnScreen(),
+      worldWeather: (name: AtmosphereName, seconds = 0) => { weatherName = name; weather.set(ATMOSPHERES[name], seconds); if (weatherSel) weatherSel.value = name; },
+      worldGround: (wet: number, cover: number) => { wetness = wet; snowCover = cover; },
       worldPlaces: {
         village: VC,
         glade: GC,
@@ -715,6 +748,31 @@ if (app) {
   });
   syncButton();
 
+  // Weather picker: a select in the HUD, W cycles, ?weather= starts there.
+  const weatherSel = document.getElementById("weather") as HTMLSelectElement | null;
+  const setWeather = (name: AtmosphereName) => {
+    weatherName = name;
+    weather.set(ATMOSPHERES[name], 4);
+    if (weatherSel) weatherSel.value = name;
+    loop.setContinuous(true);
+  };
+  if (weatherSel) {
+    for (const name of WEATHERS) {
+      const o = document.createElement("option");
+      o.value = name;
+      o.textContent = name[0].toUpperCase() + name.slice(1);
+      weatherSel.append(o);
+    }
+    weatherSel.value = weatherName;
+    weatherSel.addEventListener("change", () => setWeather(weatherSel.value as AtmosphereName));
+  }
+  input.captureKeys(["KeyW"]);
+  input.on((e) => {
+    if (e.kind === "key" && e.phase === "down" && e.code === "KeyW" && !e.repeat) {
+      setWeather(WEATHERS[(WEATHERS.indexOf(weatherName) + 1) % WEATHERS.length]);
+    }
+  });
+
   // --- build and stream ---------------------------------------------------------
   const RADIUS = Number(params.get("radius") ?? SIZE.x * 1.5);
   const tgt = () => orbit.target();
@@ -746,6 +804,6 @@ if (app) {
     `${housesPlaced} houses, ${treesPlaced} trees, ${rocksPlaced} rocks, ${placed - rocksPlaced - treesPlaced} other plants from ${modelCount} models · ` +
     `${(tModels / 1000).toFixed(1)}s gen, ${secs}s total · ${(voxels / 1000).toFixed(0)}k voxels · ` +
     `${palette.used}/255 palette slots · ${(mem.bytes / 1048576).toFixed(0)} MB of bricks · ` +
-    `drag the lamp · N for night/day · drag to turn, right-drag to pan, wheel to zoom`;
+    `drag the lamp · N night/day · W weather · drag to turn, right-drag to pan, wheel to zoom`;
   loop.invalidate();
 }
