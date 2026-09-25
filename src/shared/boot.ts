@@ -25,8 +25,11 @@ export async function boot(appName: string): Promise<Booted | null> {
   const info = document.getElementById("info");
   if (!canvas || !info) throw new Error("Missing #scene / #info");
   initTheme(document.getElementById("theme-toggle"));
+  // On a phone the info is one line; a tap shows the rest.
+  info.addEventListener("click", () => info.classList.toggle("open"));
   try {
     const gpu = await initGpu(canvas);
+    reportGpuErrors(gpu);
     return { gpu, canvas, info };
   } catch (err) {
     if (err instanceof WebGPUUnsupportedError) {
@@ -44,4 +47,35 @@ export async function boot(appName: string): Promise<Booted | null> {
  */
 export function runLoop(frame: (now: number, dt: number) => void, continuous = true): FrameLoop {
   return makeFrameLoop({ render: frame, continuous });
+}
+
+/**
+ * Show GPU validation and out-of-memory errors, and a lost device, in the
+ * page: on a phone there is no console to find them in, and a page that
+ * draws nothing says nothing about why.
+ */
+function reportGpuErrors(gpu: GpuContext): void {
+  let box: HTMLElement | null = null;
+  let first = "";
+  let count = 0;
+  const show = (msg: string) => {
+    console.error("[gpu]", msg);
+    if (!box) {
+      box = document.createElement("div");
+      box.className = "gpu-error";
+      (document.getElementById("hud") ?? document.body).append(box);
+    }
+    // The first error is the one that explains the rest.
+    if (!count) first = msg;
+    count++;
+    box.textContent = `GPU: ${first}${count > 1 ? `\n(+${count - 1} more)` : ""}`;
+  };
+  gpu.device.addEventListener("uncapturederror", (e) => show((e as GPUUncapturedErrorEvent).error.message));
+  gpu.device.lost.then((info) => {
+    if (info.reason !== "destroyed") show(`device lost: ${info.message || info.reason}`);
+  });
+  if (new URLSearchParams(location.search).has("diag")) {
+    const a = gpu.adapterInfo, l = gpu.limits;
+    show(`diag · ${[a.vendor, a.architecture, a.description].filter(Boolean).join(" ")} · 3D ${l.maxTextureDimension3D} · binding ${(l.maxStorageBufferBindingSize / 1048576).toFixed(0)} MiB · storage/stage ${gpu.device.limits.maxStorageBuffersPerShaderStage}`);
+  }
 }
