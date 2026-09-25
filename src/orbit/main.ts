@@ -31,6 +31,8 @@ if (app) {
   palette.set([0.25, 0.5, 0.85, 1], WATER * 4);
 
   const renderer = await createRenderer(gpu, { size, data, palette });
+  // ?selftest: bands showing which stage of the voxel lookup works on this GPU.
+  if (new URLSearchParams(location.search).has("selftest")) renderer.setDebug(7);
   renderer.updateCoarse(new OccupancyGrid(size, data).data);
   renderer.setFloor({ enabled: true, y: 0, colorA: [0.3, 0.32, 0.36], colorB: [0.24, 0.26, 0.3] });
 

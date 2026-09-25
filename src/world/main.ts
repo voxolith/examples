@@ -87,6 +87,8 @@ if (app) {
   const PATH = s0, PATH2 = s0 + 1, YARD = s0 + 2;
 
   const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
+  // ?selftest: bands showing which stage of the voxel lookup works on this GPU.
+  if (new URLSearchParams(location.search).has("selftest")) renderer.setDebug(7);
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   const quality = gpu.software ? "low" : "medium";
   renderer.setQuality({
