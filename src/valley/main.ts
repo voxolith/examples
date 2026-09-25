@@ -26,6 +26,7 @@ import {
   makePerf,
   makeRay,
   observeResize,
+  PALETTE_SLOTS,
   QUALITY_PRESETS,
   resizeToDisplay,
   type PointLight,
@@ -92,7 +93,10 @@ if (app) {
   const valley = layoutValley({ terrain, span: SPAN, seed, season, models, pools, sites });
 
   // --- palette ----------------------------------------------------------------------
-  const palette = new PaletteAllocator(1);
+  // The terrain and paths (world voxels, 8-bit) come first and get the low
+  // slots; the instanced models may use the renderer's whole palette, which
+  // they need at this size: every species appears, plus the rats.
+  const palette = new PaletteAllocator(1, { slots: PALETTE_SLOTS });
   const { base: terrainBase } = palette.allocate(terrain.roles, "terrain");
   const settlement: Role[] = [
     { id: "path", name: "Path", color: [0.46, 0.38, 0.27] },
@@ -127,7 +131,7 @@ if (app) {
     if (b === undefined) bases.set(key, (b = palette.allocateFor(fine.get(key)![0], paletteKey(key)).base));
     return b;
   };
-  const rats = ["rat", "grey rat"].map((k, i) => generateCreature(atScale(RATS[k], VPM), seededRandom(seed + i * 97), k).entity);
+  const rats = ["rat", "grey rat", "lab rat", "black rat"].map((k, i) => generateCreature(atScale(RATS[k], VPM), seededRandom(seed + i * 97), k).entity);
   const ratBase = rats.map((e, i) => palette.allocate(e.model.roles, `rat${i}`).base);
 
   // --- renderer ---------------------------------------------------------------------
