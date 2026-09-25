@@ -26,7 +26,6 @@ import {
   makePerf,
   makeRay,
   observeResize,
-  PALETTE_SLOTS,
   QUALITY_PRESETS,
   resizeToDisplay,
   type PointLight,
@@ -41,6 +40,7 @@ import {
   orientationYaw,
   PaletteAllocator,
   type Entity,
+  type RGB,
   type Role,
   type VariantPool,
 } from "@voxolith/engine";
@@ -93,10 +93,10 @@ if (app) {
   const valley = layoutValley({ terrain, span: SPAN, seed, season, models, pools, sites });
 
   // --- palette ----------------------------------------------------------------------
-  // The terrain and paths (world voxels, 8-bit) come first and get the low
-  // slots; the instanced models may use the renderer's whole palette, which
-  // they need at this size: every species appears, plus the rats.
-  const palette = new PaletteAllocator(1, { slots: PALETTE_SLOTS });
+  // The world's palette holds only what is in the world: terrain and paths.
+  // Every model draws from a palette of its own (the instance layer's), so
+  // there is no 255-slot budget to share between species.
+  const palette = new PaletteAllocator(1);
   const { base: terrainBase } = palette.allocate(terrain.roles, "terrain");
   const settlement: Role[] = [
     { id: "path", name: "Path", color: [0.46, 0.38, 0.27] },
@@ -123,16 +123,7 @@ if (app) {
     for (const sp of species) { fine.set(sp.key, out.slice(i, i + sp.count)); i += sp.count; }
     console.log(`[valley] ${out.length} models in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
   }
-  // A palette range per species that actually appears (rocks sharing a skin
-  // share one), as on the world page: 255 slots do not fit every species.
-  const bases = new Map<string, number>();
-  const baseOf = (key: string) => {
-    let b = bases.get(key);
-    if (b === undefined) bases.set(key, (b = palette.allocateFor(fine.get(key)![0], paletteKey(key)).base));
-    return b;
-  };
   const rats = ["rat", "grey rat", "lab rat", "black rat"].map((k, i) => generateCreature(atScale(RATS[k], VPM), seededRandom(seed + i * 97), k).entity);
-  const ratBase = rats.map((e, i) => palette.allocate(e.model.roles, `rat${i}`).base);
 
   // --- renderer ---------------------------------------------------------------------
   const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
@@ -147,15 +138,37 @@ if (app) {
 
   const ground = refineTerrain(terrain, K, { seed });
   const layer = makeInstanceLayer(renderer);
+  // One palette per species (rocks sharing a skin share one)...
+  const baseOf = (key: string) => layer.palettes.of(paletteKey(key), fine.get(key)![0].model.roles);
+  // ...and one per house: each gets its own plaster or brick, roof and paint,
+  // a shade either way of its style's, so no two houses in the village match.
+  const houseBase = (key: string, n: number) => {
+    const h = (salt: number) => ((Math.imul(n + 1, 0x9e3779b1) ^ Math.imul(salt, 0x85ebca77)) >>> 0) / 4294967296;
+    const shade = (c: RGB, f: number, warm: number): RGB => [
+      Math.min(1, c[0] * f * (1 + warm)), Math.min(1, c[1] * f), Math.min(1, c[2] * f * (1 - warm)),
+    ];
+    const wall = 0.88 + 0.24 * h(1), wallWarm = (h(2) - 0.5) * 0.12, roof = 0.8 + 0.35 * h(3), paint = h(4);
+    return layer.palettes.of(`${key}#${n}`, fine.get(key)![0].model.roles, (c, r) => {
+      if (r.id.startsWith("wall") || r.id === "brick.exposed") return shade(c, wall, wallWarm);
+      if (r.id.startsWith("roof") || r.id === "ridge") return shade(c, roof, 0);
+      // Doors and shutters: a painted colour of its own.
+      if (r.id.startsWith("door") || r.id.startsWith("shutter")) {
+        const hue: RGB = paint < 0.33 ? [0.2, 0.35, 0.3] : paint < 0.66 ? [0.45, 0.16, 0.14] : [0.18, 0.24, 0.42];
+        return r.id.endsWith("dark") ? [hue[0] * 0.7, hue[1] * 0.7, hue[2] * 0.7] : hue;
+      }
+      return c;
+    });
+  };
+  const ratBase = rats.map((e, i) => layer.palettes.of(`rat${i}`, e.model.roles));
 
   // Scenery: every house and every plant and rock of the layout, placed where
   // the world page stamps it, turned the same way.
   const statics: { model: Entity["model"]; x: number; y: number; z: number; yaw: number; mirror: boolean; base: number }[] = [];
   let trees = 0, rocks = 0, plants = 0;
-  for (const h of valley.houses) {
+  for (const [hi, h] of valley.houses.entries()) {
     const e = fine.get(h.key)![h.variant % fine.get(h.key)!.length];
     const { yaw, mirror } = orientationYaw(h.orientation);
-    statics.push({ model: e.model, x: h.x * K, y: h.y * K, z: h.z * K, yaw, mirror, base: baseOf(h.key) });
+    statics.push({ model: e.model, x: h.x * K, y: h.y * K, z: h.z * K, yaw, mirror, base: houseBase(h.key, hi) });
   }
   valley.scatter(0, 0, COARSE.x - 1, COARSE.z - 1, (pt) => {
     const list = fine.get(pt.key)!;
@@ -168,10 +181,6 @@ if (app) {
     else plants++;
   }, false);
   layer.setStatic(statics);
-  // Ranges were claimed while placing; send the finished palette.
-  renderer.updatePalette(palette.buildPalette());
-  const mats = palette.buildMaterials();
-  if (mats) renderer.updateMaterials(mats);
 
   // --- the ground, streamed ---------------------------------------------------------------
   const CHUNK = 256;
