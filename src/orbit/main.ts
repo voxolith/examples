@@ -32,7 +32,7 @@ if (app) {
 
   const renderer = await createRenderer(gpu, { size, data, palette });
   // ?selftest: bands showing which stage of the voxel lookup works on this GPU.
-  { const st = new URLSearchParams(location.search).get("selftest"); if (st !== null) renderer.setDebug(st === "2" ? 8 : 7); }
+  { const st = new URLSearchParams(location.search).get("selftest"); if (st !== null) renderer.setDebug(st === "3" ? 9 : st === "2" ? 8 : 7); }
   renderer.updateCoarse(new OccupancyGrid(size, data).data);
   renderer.setFloor({ enabled: true, y: 0, colorA: [0.3, 0.32, 0.36], colorB: [0.24, 0.26, 0.3] });
 
