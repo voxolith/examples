@@ -23,6 +23,7 @@ export default defineConfig({
         world: page("world/index.html"),
         creature: page("creature/index.html"),
         swarm: page("swarm/index.html"),
+        instances: page("instances/index.html"),
       },
     },
   },
