@@ -88,7 +88,7 @@ if (app) {
 
   const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
   // ?selftest: bands showing which stage of the voxel lookup works on this GPU.
-  if (new URLSearchParams(location.search).has("selftest")) renderer.setDebug(7);
+  { const st = new URLSearchParams(location.search).get("selftest"); if (st !== null) renderer.setDebug(st === "2" ? 8 : 7); }
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   const quality = gpu.software ? "low" : "medium";
   renderer.setQuality({
