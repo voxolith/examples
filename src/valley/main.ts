@@ -55,22 +55,34 @@ import { houseParams, HOUSE_KINDS, layoutValley, paletteKey, TILE, valleySites, 
 import { boot, runLoop } from "../shared/boot";
 
 const params = new URLSearchParams(location.search);
-/** Voxels per metre here, and the factor over the world page's 10. */
-const VPM = 100;
-const K = VPM / 10;
-const SPAN = Math.max(1, Math.min(8, Math.round(Number(params.get("scale") ?? 4))));
-const COARSE = { x: TILE * SPAN, y: 192, z: TILE * SPAN };
-const SIZE = { x: COARSE.x * K, y: COARSE.y * K, z: COARSE.z * K };
-const VARIANTS = Math.max(1, Math.min(10, Number(params.get("variants") ?? 3)));
-const RAT_COUNT = Math.max(0, Math.min(400, Number(params.get("rats") ?? 60)));
-/** Streamed radius, fine voxels. */
-const RADIUS = Math.max(8, Number(params.get("radius") ?? 24)) * VPM;
 const seed = hashSeed(params.get("seed") ?? "voxolith");
 const season = (params.get("season") ?? "summer") as Season;
+const num = (key: string, fallback: number) => (params.has(key) ? Number(params.get(key)) : fallback);
 
 const app = await boot("valley");
 if (app) {
   const { gpu, canvas, info } = app;
+
+  // A phone gets a lighter valley: half the resolution (a quarter of the
+  // surface voxels to generate and draw), a smaller map, one model per
+  // species and fewer rats. Told apart by a touch-only pointer or the small
+  // storage bindings mobile GPUs offer. ?full asks for the desktop settings;
+  // every setting below can still be given on its own.
+  const phone =
+    !params.has("full") &&
+    ((matchMedia("(pointer: coarse)").matches && !matchMedia("(pointer: fine)").matches) || gpu.limits.maxStorageBufferBindingSize < 512 * 1048576);
+  /** Voxels per metre here (50 or 100), and the factor over the world page's 10. */
+  const VPM = num("vpm", phone ? 50 : 100) >= 75 ? 100 : 50;
+  const K = VPM / 10;
+  /** Lengths below are written for 1 cm voxels; this scales them to VPM. */
+  const cm = VPM / 100;
+  const SPAN = Math.max(1, Math.min(8, Math.round(num("scale", phone ? 2 : 4))));
+  const COARSE = { x: TILE * SPAN, y: 192, z: TILE * SPAN };
+  const SIZE = { x: COARSE.x * K, y: COARSE.y * K, z: COARSE.z * K };
+  const VARIANTS = Math.max(1, Math.min(10, num("variants", phone ? 1 : 3)));
+  const RAT_COUNT = Math.max(0, Math.min(400, num("rats", phone ? 20 : 60)));
+  /** Streamed radius, in voxels (given in metres). */
+  const RADIUS = Math.max(8, num("radius", phone ? 16 : 24)) * VPM;
 
   // --- the valley's design, at the world page's scale ------------------------------
   const terrain = valleyTerrain(SPAN, seed);
@@ -116,7 +128,7 @@ if (app) {
     );
     const t0 = performance.now();
     const out = await workers.generateMany(specs, (done, total) => {
-      info.textContent = `generating ${done}/${total} models at ${VPM} voxels per metre`;
+      info.textContent = `generating ${done}/${total} models at ${VPM} voxels per metre${workers.cached ? ` (${workers.cached} from the cache)` : ""}`;
     });
     workers.destroy();
     let i = 0;
@@ -128,13 +140,14 @@ if (app) {
   // --- renderer ---------------------------------------------------------------------
   const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
-  const quality = gpu.software ? "low" : "medium";
+  const quality = gpu.software || phone ? "low" : "medium";
   // Rays cross thousands of voxels of air here; the 64-voxel skip keeps
   // that cheap, but the step caps have to allow for the canopy and the ground.
-  renderer.setQuality({ ...QUALITY_PRESETS[quality], maxSteps: gpu.software ? 768 : 2048, shadowSteps: quality === "low" ? 0 : 320 });
+  renderer.setQuality({ ...QUALITY_PRESETS[quality], maxSteps: gpu.software || phone ? 768 : 2048, shadowSteps: quality === "low" ? 0 : 320 });
   // A CPU adapter would take many seconds over the first full-size frame
   // before the scale controller reacts, so it starts small.
   if (gpu.software) gpu.renderScale = Math.min(gpu.renderScale, 0.3);
+  else if (phone) gpu.renderScale = Math.min(gpu.renderScale, 0.6);
 
   const ground = refineTerrain(terrain, K, { seed });
   const layer = makeInstanceLayer(renderer);
@@ -204,7 +217,7 @@ if (app) {
 
   // --- rats ---------------------------------------------------------------------------------
   interface Rat extends CrowdMember { speed: number; turn: number; timer: number; }
-  const crowd = makeCrowd({ instances: layer, near: 3000, farFps: 6, freeze: 12000, budgetMs: 4 });
+  const crowd = makeCrowd({ instances: layer, near: 3000 * cm, farFps: 6, freeze: 12000 * cm, budgetMs: 4 });
   const rng = seededRandom(seed ^ 0x51ed);
   const [vx, vz] = [sites.VC[0] * K, sites.VC[1] * K];
   const members: Rat[] = [];
@@ -214,21 +227,21 @@ if (app) {
     anim.update(rng() * 3);
     let x = 0, z = 0;
     for (let t = 0; t < 50; t++) {
-      x = vx + (rng() - 0.5) * 3000; z = vz + (rng() - 0.5) * 3000;
+      x = vx + (rng() - 0.5) * 3000 * cm; z = vz + (rng() - 0.5) * 3000 * cm;
       if (!ground.waterAt(x, z) && !valley.inHouse(Math.floor(x / K), Math.floor(z / K), 2)) break;
     }
     members.push({ id: i + 1, entity: rats[k], variant: `rat${k}`, anim, base: ratBase[k], x, y: 0, z, yaw: rng() * Math.PI * 2, speed: 40, turn: 0, timer: rng() * 4 });
   }
   const wrap = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
   const blocked = (x: number, z: number) =>
-    x < 50 || z < 50 || x > SIZE.x - 50 || z > SIZE.z - 50 || ground.waterAt(x, z) || valley.inHouse(Math.floor(x / K), Math.floor(z / K), 1);
+    x < 50 * cm || z < 50 * cm || x > SIZE.x - 50 * cm || z > SIZE.z - 50 * cm || ground.waterAt(x, z) || valley.inHouse(Math.floor(x / K), Math.floor(z / K), 1);
   const think = (r: Rat, dt: number) => {
     r.timer -= dt;
     if (r.timer <= 0) {
       const c = ["walk", "walk", "idle", "sniff", "run"][Math.floor(rng() * 5)];
       r.anim.play(c, { fade: 0.25 });
       // Real rat speeds: about half a metre a second walking, two running.
-      r.speed = c === "walk" ? 45 : c === "run" ? 180 : 0;
+      r.speed = (c === "walk" ? 45 : c === "run" ? 180 : 0) * cm;
       r.turn = r.yaw + (rng() - 0.5) * 2.4;
       r.timer = 1.5 + rng() * 4;
     }
@@ -244,17 +257,17 @@ if (app) {
 
   // --- camera -------------------------------------------------------------------------
   const night0 = params.get("time") === "night";
-  const camera = makeCamera({ target: [vx, 0, vz], distance: 2600, pitchDeg: 38, fovDeg: 42 });
+  const camera = makeCamera({ target: [vx, 0, vz], distance: 2600 * cm, pitchDeg: 38, fovDeg: 42 });
   prepareSurface(canvas, { contextMenu: false });
   const input = createInput(canvas, { loop: { invalidate: () => loop.invalidate() } });
   const start: [number, number] = night0 ? [sites.GC[0] * K, sites.GC[1] * K] : [vx, vz];
   const orbit = makeOrbitController(input, {
-    yaw: 35, pitchLimits: [8, 85], distanceLimits: [150, RADIUS * 0.8], fovDeg: 42, pan: "secondary",
+    yaw: 35, pitchLimits: [8, 85], distanceLimits: [150 * cm, RADIUS * 0.8], fovDeg: 42, pan: "secondary",
     onChange: () => perf.reprobe(),
     panBounds: { minX: 0, maxX: SIZE.x, minZ: 0, maxZ: SIZE.z },
-    target: [start[0], ground.heightAt(start[0], start[1]) + 60, start[1]],
+    target: [start[0], ground.heightAt(start[0], start[1]) + 60 * cm, start[1]],
     pitch: night0 ? 45 : 38,
-    distance: night0 ? 1800 : 2600,
+    distance: (night0 ? 1800 : 2600) * cm,
   });
   const frame = () => camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch());
   const perf = makePerf({ enabled: params.has("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.35, maxSampleMs: 4000, retryAfterMs: Infinity });
@@ -278,14 +291,14 @@ if (app) {
     else snowCover = approach(snowCover, 0, raining > 0 ? 0.05 : 0.012, dt);
   };
 
-  const HOVER = 70;
+  const HOVER = 70 * cm;
   const lamp: Vec3 = [sites.GC[0] * K, 0, sites.GC[1] * K];
   const standAt = (x: number, z: number) => Math.max(ground.heightAt(x, z), ground.waterAt(x, z) ? ground.waterTop : 0) + HOVER;
   lamp[1] = standAt(lamp[0], lamp[2]);
   const updateLamp = () => {
     const lights: PointLight[] = [
-      { position: lamp, color: [1.0, 0.7, 0.38], intensity: 2.6, range: 900, glow: 35 },
-      { position: lamp, color: [1.0, 0.75, 0.45], intensity: 0.25, range: 500, shadows: false },
+      { position: lamp, color: [1.0, 0.7, 0.38], intensity: 2.6, range: 900 * cm, glow: 35 * cm },
+      { position: lamp, color: [1.0, 0.75, 0.45], intensity: 0.25, range: 500 * cm, shadows: false },
     ];
     renderer.setLights(lights);
     loop.invalidate();
@@ -417,7 +430,7 @@ if (app) {
   const report = () => {
     const now = performance.now(), secs = (now - acc.t) / 1000, st = renderer.instanceStats();
     info.textContent =
-      `${valley.houses.length} houses, ${trees} trees, ${rocks} rocks, ${plants} plants, ${members.length} rats · ` +
+      `${VPM} voxels/m${phone ? " (phone settings; ?full for all)" : ""} · ${valley.houses.length} houses, ${trees} trees, ${rocks} rocks, ${plants} plants, ${members.length} rats · ` +
       `${st.instances} instances of ${st.models} models · ${world.resident} chunks${world.pending ? ` (+${world.pending})` : ""} · ` +
       `${(st.bytes / 1048576).toFixed(0)} MB on the GPU · ${(acc.frames / secs).toFixed(0)} fps · drag the lamp · N night/day · W weather`;
     acc.frames = 0; acc.t = now;
@@ -433,7 +446,7 @@ if (app) {
       valleyPlaces: { village: [vx, vz], glade: [sites.GC[0] * K, sites.GC[1] * K], get rat() { return members[0] ? [members[0].x, members[0].z] : [vx, vz]; } },
       valleyLook: (x: number, z: number, distance: number, pitch: number, yaw?: number) => {
         spin = false;
-        orbit.set({ target: [x, ground.heightAt(x, z) + 60, z], distance, pitch, ...(yaw === undefined ? {} : { yaw }) });
+        orbit.set({ target: [x, ground.heightAt(x, z) + 60 * cm, z], distance: distance * cm, pitch, ...(yaw === undefined ? {} : { yaw }) });
       },
       valleyWeather: (name: AtmosphereName) => setWeather(name, 0),
       valleyLamp: () => lampOnScreen(),

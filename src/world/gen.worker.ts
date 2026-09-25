@@ -12,4 +12,7 @@ registerBushGenerators();
 registerGrassGenerators();
 registerRockGenerators();
 registerBuildingGenerators();
-serveGenerators();
+// Production builds keep generated models in IndexedDB, so a second visit
+// loads them instead of generating (a build's worker URL changes with its
+// code, so a new build never reads an old model). Off in development.
+serveGenerators({ cache: import.meta.env.DEV ? undefined : "voxolith-models" });
