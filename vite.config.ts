@@ -24,6 +24,7 @@ export default defineConfig({
         creature: page("creature/index.html"),
         swarm: page("swarm/index.html"),
         instances: page("instances/index.html"),
+        valley: page("valley/index.html"),
       },
     },
   },

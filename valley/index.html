@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>valley — Voxolith Examples</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#151B29" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#F6F4EE" />
+    <script>try{var t=localStorage.getItem("voxolith-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="scene"></canvas>
+      <div id="hud"><div class="panel"><a class="brand" href="../"><img src="/brand/logo-mark.svg" alt=""> voxolith <small>valley · 1 cm voxels</small></a> <span id="info">generating…</span> <select class="weather-select" id="weather" title="Weather (W)" aria-label="Weather"></select> <button class="time-toggle" id="time-toggle" type="button" title="Switch to night (N)">Night</button> <button class="theme-toggle" id="theme-toggle" type="button"></button></div></div>
+    </div>
+    <script type="module" src="/src/valley/main.ts"></script>
+  </body>
+</html>
