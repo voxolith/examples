@@ -217,7 +217,8 @@ if (app) {
 
   // --- rats ---------------------------------------------------------------------------------
   interface Rat extends CrowdMember { speed: number; turn: number; timer: number; }
-  const crowd = makeCrowd({ instances: layer, near: 3000 * cm, farFps: 6, freeze: 12000 * cm, budgetMs: 4 });
+  // ?rigged poses the rats on the GPU from one rest model per variant instead of baking poses.
+  const crowd = makeCrowd({ instances: layer, rigged: params.has("rigged"), near: 3000 * cm, farFps: 6, freeze: 12000 * cm, budgetMs: 4 });
   const rng = seededRandom(seed ^ 0x51ed);
   const [vx, vz] = [sites.VC[0] * K, sites.VC[1] * K];
   const members: Rat[] = [];

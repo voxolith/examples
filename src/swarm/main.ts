@@ -8,11 +8,13 @@
 //
 // Move the cursor over the field (or tap) and the rats near it scatter.
 // ?count= sets how many (default 300, up to 2000). The overlay shows what it
-// costs.
+// costs. ?instances draws the baked poses as instances instead of stamping
+// them; ?rigged poses the rats on the GPU from one rest model per variant (no
+// baking at all; see the engine's makeCrowd `rigged` option).
 
 import { createRenderer, makeCamera, makePerf, makeRay, observeResize, resizeToDisplay, type Renderer } from "@voxolith/renderer";
 import { hashSeed, seededRandom } from "@voxolith/renderer/core";
-import { makeBrickStamper, PaletteAllocator, type Entity } from "@voxolith/engine";
+import { makeBrickStamper, makeInstanceLayer, PaletteAllocator, type Entity } from "@voxolith/engine";
 import { makeAnimator, makeCrowd, type CrowdMember, type CrowdStats } from "@voxolith/engine/animation";
 import { createInput, makeOrbitController, prepareSurface, recogniseGestures } from "@voxolith/engine/input";
 import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
@@ -44,7 +46,11 @@ if (app) {
   renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: terrain.maxY(), z1: SIZE.z - 1 }, (cells, ox, oy, oz) => terrain.fillBrick(cells, ox, oy, oz, groundBase));
   const ground = (x: number, z: number) => terrain.heightAt(Math.max(0, Math.min(SIZE.x - 1, Math.round(x))), Math.max(0, Math.min(SIZE.z - 1, Math.round(z))));
 
-  const crowd = makeCrowd({ stamper: makeBrickStamper(renderer, { size: SIZE }), near: 140, farFps: 6, freeze: 700, budgetMs: 5 });
+  // Stamped (default), baked instances, or posed on the GPU. Instances use the world palette slots.
+  const mode = params.has("rigged") ? "rigged" : params.has("instances") ? "instances" : "stamped";
+  const crowd = mode === "stamped"
+    ? makeCrowd({ stamper: makeBrickStamper(renderer, { size: SIZE }), near: 140, farFps: 6, freeze: 700, budgetMs: 5 })
+    : makeCrowd({ instances: makeInstanceLayer(renderer), rigged: mode === "rigged", near: 140, farFps: 6, freeze: 700, budgetMs: 5 });
 
   interface Rat extends CrowdMember { speed: number; turn: number; timer: number; panic: number; }
   const CLIPS = ["walk", "idle", "sniff", "run"];
@@ -141,7 +147,7 @@ if (app) {
     const now = performance.now(), secs = (now - acc.fpsT) / 1000;
     const n = Math.max(1, acc.frames), c = crowd.cache.stats();
     info.textContent =
-      `${rats.length} rats · ${(acc.frames / secs).toFixed(0)} fps · ${(acc.ms / n).toFixed(1)} ms CPU/frame · ` +
+      `${rats.length} rats (${mode}) · ${(acc.frames / secs).toFixed(0)} fps · ${(acc.ms / n).toFixed(1)} ms CPU/frame · ` +
       `${(acc.bakes / n).toFixed(1)} bakes/frame · cache ${c.entries} poses, ${((100 * c.hits) / Math.max(1, c.hits + c.misses)).toFixed(0)}% hits · ` +
       `${(acc.bricks / n).toFixed(0)} bricks, ${((acc.bricks / n) * 288 / 1024).toFixed(0)} KB/frame · hover or tap to scatter them`;
     Object.assign(acc, { frames: 0, ms: 0, bakes: 0, bricks: 0, fpsT: now });
