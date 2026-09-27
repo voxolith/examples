@@ -20,7 +20,18 @@ Siblings needed: renderer, engine, generators.
 
 ## Map
 
-- `src/shared/boot.ts`: `boot(name)` (device, canvas, HUD, software warning) and `runLoop`.
+- `src/shared/boot.ts`: `boot(name)` (device, canvas, HUD, software warning, and the page's
+  load tracker `load` with its loading screen `screen`) and `runLoop`. Every page reports its
+  load into `load` (`trackRenderer`, the pool, layer and chunked world, app phases) and calls
+  `screen.ready()` once it has drawn; minecraft-region passes `{ loading: false }` and opens a
+  screen per dropped file.
+- `src/shared/loading-screen.ts`: `showLoadingScreen`: the full-canvas overlay until
+  `ready()`, then a corner pill while phases still stream; `fail(err)` shows an error. Its
+  words are in `src/shared/loading-labels.ts` (`PHASE_LABELS`, `PAGE_BLURBS`): add a label
+  there for a new phase. No `visibility` in its CSS (the smoke hides overlays with it).
+- `src/shared/loading.ts`: `nextFrame` (resolves after the paint), `step(load, phase, fn)`
+  (an app phase shown a frame before a blocking step), and `reportLoadTimeline`
+  (`window.loadTimeline`; under `?perf` the timeline in the console).
 - `src/shared/scale.ts`: the voxel scale of `valley` and `nightwood`: `isPhone` (the phone
   profile test), `pickScale` (`?vpm=` snapped to 20, 50 or 100; default 50, 20 on a phone; the
   HUD's scale button steps between the default and one scale finer).

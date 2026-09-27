@@ -24,7 +24,7 @@ import {
   type Vec3,
 } from "@voxolith/renderer";
 import { hashSeed, seededRandom } from "@voxolith/renderer/core";
-import { makeBrickStamper, PaletteAllocator, toSprite, type Entity, type EntityModel, type Rig, type Sprite } from "@voxolith/engine";
+import { makeBrickStamper, PaletteAllocator, toSprite, trackRenderer, type Entity, type EntityModel, type Rig, type Sprite } from "@voxolith/engine";
 import {
   bakePose,
   invertRigid,
@@ -46,6 +46,7 @@ import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosp
 import { generateTerrain } from "@voxolith/gen-terrain";
 import { generateCreature, PRESETS, ROLE } from "@voxolith/gen-creature";
 import { boot, runLoop } from "../shared/boot";
+import { reportLoadTimeline, step } from "../shared/loading";
 
 const params = new URLSearchParams(location.search);
 const COUNT = Math.max(1, Math.min(40, Number(params.get("count") ?? 8)));
@@ -56,24 +57,24 @@ const YAWS = 16;
 
 const app = await boot("creature");
 if (app) {
-  const { gpu, canvas, info } = app;
+  const { gpu, canvas, info, load, screen } = app;
   const rng = seededRandom(seed);
 
   // --- ground ---------------------------------------------------------------
-  const terrain = generateTerrain({ width: SIZE.x, depth: SIZE.z, height: SIZE.y, baseY: 14, relief: 5, featureSize: 90, waterLevel: 9, river: { enabled: false, width: 0, depth: 0, banks: 0, meander: 100 } }, seed);
+  const terrain = await step(load, "terrain", () => generateTerrain({ width: SIZE.x, depth: SIZE.z, height: SIZE.y, baseY: 14, relief: 5, featureSize: 90, waterLevel: 9, river: { enabled: false, width: 0, depth: 0, banks: 0, meander: 100 } }, seed));
   const palette = new PaletteAllocator(1);
   const { base: groundBase } = palette.allocate(terrain.roles, "terrain");
 
   // --- rats -----------------------------------------------------------------
   const KINDS = ["rat", "grey rat", "lab rat", "black rat"];
-  const variants = KINDS.map((k, i) => generateCreature(PRESETS[k], seededRandom(seed + i * 101), k).entity);
+  const variants = await step(load, "creatures", () => KINDS.map((k, i) => generateCreature(PRESETS[k], seededRandom(seed + i * 101), k).entity));
   const bases = variants.map((e, i) => palette.allocate(e.model.roles, `creature:${KINDS[i]}`).base);
 
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load) });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   renderer.setQuality(gpu.software ? "low" : "medium");
   const maxY = terrain.maxY();
-  renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: maxY, z1: SIZE.z - 1 }, (cells, ox, oy, oz) => terrain.fillBrick(cells, ox, oy, oz, groundBase));
+  await step(load, "ground", () => renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: maxY, z1: SIZE.z - 1 }, (cells, ox, oy, oz) => terrain.fillBrick(cells, ox, oy, oz, groundBase)));
   const groundAt = (x: number, z: number) => terrain.heightAt(Math.max(0, Math.min(SIZE.x - 1, Math.round(x))), Math.max(0, Math.min(SIZE.z - 1, Math.round(z))));
 
   const stamper = makeBrickStamper(renderer, { size: SIZE });
@@ -342,6 +343,8 @@ if (app) {
     renderer.render({ ...frame(), ...sky, time: now / 1000 });
   }, true);
   observeResize(canvas, loop);
+  screen.ready();
+  void reportLoadTimeline(load, { perf: params.has("perf"), overlay: perf });
 
   // For the end-to-end checks (tools/input-e2e.ts): where each rat is drawn, and what happened to it.
   if (params.has("e2e")) {

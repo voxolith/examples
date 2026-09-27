@@ -11,7 +11,7 @@
 
 import { createRenderer, makeCamera, makePerf, observeResize, resizeToDisplay, type Renderer } from "@voxolith/renderer";
 import { hashSeed, seededRandom } from "@voxolith/renderer/core";
-import { blitModelToBricks, makeInstanceLayer, PaletteAllocator, type Entity, type Orientation } from "@voxolith/engine";
+import { blitModelToBricks, makeInstanceLayer, PaletteAllocator, trackRenderer, type Entity, type EntityPlacement, type Orientation } from "@voxolith/engine";
 import { makeAnimator, makeCrowd, type CrowdMember } from "@voxolith/engine/animation";
 import { createInput, makeOrbitController, prepareSurface } from "@voxolith/engine/input";
 import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
@@ -19,6 +19,7 @@ import { generateTerrain } from "@voxolith/gen-terrain";
 import { generateTree, PRESETS as TREES } from "@voxolith/gen-tree";
 import { generateCreature, PRESETS as RATS } from "@voxolith/gen-creature";
 import { boot, runLoop } from "../shared/boot";
+import { reportLoadTimeline, step } from "../shared/loading";
 
 const params = new URLSearchParams(location.search);
 const TREE_COUNT = Math.max(0, Math.min(2000, Number(params.get("trees") ?? 160)));
@@ -29,35 +30,37 @@ const seed = hashSeed(params.get("seed") ?? "instances");
 
 const app = await boot("instances");
 if (app) {
-  const { gpu, canvas, info } = app;
+  const { gpu, canvas, info, load, screen } = app;
   const rng = seededRandom(seed);
-  const terrain = generateTerrain({ width: SIZE.x, depth: SIZE.z, height: SIZE.y, baseY: 12, relief: 6, featureSize: 200, waterLevel: 7, river: { enabled: false, width: 0, depth: 0, banks: 0, meander: 100 } }, seed);
+  const terrain = await step(load, "terrain", () => generateTerrain({ width: SIZE.x, depth: SIZE.z, height: SIZE.y, baseY: 12, relief: 6, featureSize: 200, waterLevel: 7, river: { enabled: false, width: 0, depth: 0, banks: 0, meander: 100 } }, seed));
   const palette = new PaletteAllocator(1);
   const { base: groundBase } = palette.allocate(terrain.roles, "terrain");
 
   // Six tree models: two of each species.
   const trees: { entity: Entity; base: number }[] = [];
-  for (const [k, kind] of (["oak", "birch", "spruce"] as const).entries())
-    for (let n = 0; n < 2; n++) {
-      const p = structuredClone(TREES[kind]);
-      p.shape.height = 90 + n * 30;
-      const entity = generateTree(p, seededRandom(seed + k * 31 + n * 7)).entity;
-      trees.push({ entity, base: palette.allocate(entity.model.roles, `${kind}${n}`).base });
-    }
+  await step(load, "trees", () => {
+    for (const [k, kind] of (["oak", "birch", "spruce"] as const).entries())
+      for (let n = 0; n < 2; n++) {
+        const p = structuredClone(TREES[kind]);
+        p.shape.height = 90 + n * 30;
+        const entity = generateTree(p, seededRandom(seed + k * 31 + n * 7)).entity;
+        trees.push({ entity, base: palette.allocate(entity.model.roles, `${kind}${n}`).base });
+      }
+  });
   const KINDS = ["rat", "grey rat", "lab rat", "black rat"];
-  const rats: Entity[] = KINDS.map((k, i) => generateCreature(RATS[k], seededRandom(seed + i * 97), k).entity);
+  const rats: Entity[] = await step(load, "creatures", () => KINDS.map((k, i) => generateCreature(RATS[k], seededRandom(seed + i * 97), k).entity));
   const ratBase = rats.map((e, i) => palette.allocate(e.model.roles, KINDS[i]).base);
 
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load) });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   renderer.setQuality(gpu.software ? "low" : "medium");
-  renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: terrain.maxY(), z1: SIZE.z - 1 }, (cells, ox, oy, oz) => terrain.fillBrick(cells, ox, oy, oz, groundBase));
+  await step(load, "ground", () => renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: terrain.maxY(), z1: SIZE.z - 1 }, (cells, ox, oy, oz) => terrain.fillBrick(cells, ox, oy, oz, groundBase)));
   const ground = (x: number, z: number) => terrain.heightAt(Math.max(0, Math.min(SIZE.x - 1, Math.round(x))), Math.max(0, Math.min(SIZE.z - 1, Math.round(z))));
 
-  const layer = makeInstanceLayer(renderer);
+  const layer = makeInstanceLayer(renderer, { load });
   // Trees on dry ground, spaced, at any heading.
   const placed: { x: number; z: number }[] = [];
-  const statics = [];
+  const statics: (EntityPlacement & { yaw: number })[] = [];
   for (let tries = 0; statics.length < TREE_COUNT && tries < TREE_COUNT * 30; tries++) {
     const x = 40 + rng() * (SIZE.x - 80), z = 40 + rng() * (SIZE.z - 80);
     if (terrain.waterAt(Math.round(x), Math.round(z)) || placed.some((p) => Math.hypot(p.x - x, p.z - z) < 38)) continue;
@@ -65,12 +68,15 @@ if (app) {
     const t = trees[Math.floor(rng() * trees.length)];
     statics.push({ model: t.entity.model, x: Math.round(x), y: ground(x, z) + 1, z: Math.round(z), yaw: rng() * Math.PI * 2, base: t.base });
   }
-  if (STAMP) {
-    // The old way, for comparison: every tree written into the world, turned in 90° steps.
-    for (const s of statics) {
-      blitModelToBricks(renderer, s.model, { x: s.x, y: s.y, z: s.z }, s.base, Math.floor((s.yaw / (Math.PI / 2)) % 4) as Orientation);
-    }
-  } else layer.setStatic(statics);
+  // Stamping or indexing them blocks for a moment: an app phase, shown a frame first.
+  await step(load, "scenery", () => {
+    if (STAMP) {
+      // The old way, for comparison: every tree written into the world, turned in 90° steps.
+      for (const s of statics) {
+        blitModelToBricks(renderer, s.model, { x: s.x, y: s.y, z: s.z }, s.base, Math.floor((s.yaw / (Math.PI / 2)) % 4) as Orientation);
+      }
+    } else layer.setStatic(statics);
+  });
 
   // Rats wander between the trees.
   interface Rat extends CrowdMember { speed: number; turn: number; timer: number; }
@@ -133,6 +139,8 @@ if (app) {
     renderer.render({ ...f, ...sky, time: now / 1000 });
   }, true);
   observeResize(canvas, loop);
+  screen.ready();
+  void reportLoadTimeline(load, { perf: params.has("perf"), overlay: perf });
   setInterval(() => {
     const now = performance.now(), secs = (now - acc.t) / 1000, st = renderer.instanceStats();
     info.textContent = `${statics.length} trees ${STAMP ? "stamped" : "instanced"} · ${members.length} rats · ${st.instances} instances of ${st.models} models · ` +

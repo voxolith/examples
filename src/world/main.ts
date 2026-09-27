@@ -12,7 +12,8 @@
 // the woods thin out towards the village, a few trees stand among the houses.
 // A draggable lamp starts in a glade in the forest; N (or the button) runs day
 // into night and back. The water ripples, so the page renders continuously
-// (`?still` freezes it and renders on demand).
+// (`?still` freezes it and renders on demand). `?perf` shows the perf overlay
+// and logs the load timeline to the console.
 
 import {
   createRenderer,
@@ -31,6 +32,7 @@ import {
   makeChunkedWorld,
   makeVariantPool,
   PaletteAllocator,
+  trackRenderer,
   voxelCount,
   type Entity,
   type Role,
@@ -48,6 +50,7 @@ import {
 } from "@voxolith/engine/atmosphere";
 import { layoutValley, paletteKey, TILE, valleySites, valleySpecies, valleyTerrain, workerSeed, type Season, type Species } from "./layout";
 import { boot, runLoop } from "../shared/boot";
+import { nextFrame, reportLoadTimeline, step } from "../shared/loading";
 
 // One tile is 320 voxels square; `scale` lays out SPANxSPAN of them.
 const params = new URLSearchParams(location.search);
@@ -60,13 +63,15 @@ const still = params.has("still");
 
 const app = await boot("world");
 if (app) {
-  const { gpu, canvas, info } = app;
+  const { gpu, canvas, info, load, screen } = app;
+  // One tracker for the whole load (boot's): the renderer, the generator workers and the chunked
+  // world report into it, the page adds its own "layout" phase, and the loading screen shows it.
 
   // --- terrain --------------------------------------------------------------
   // The ground and the river come from the terrain generator; the settlement
   // (./layout.ts) edits its heights in place (levelled pads) before anything
   // is built.
-  const terrain = valleyTerrain(SPAN, seed);
+  const terrain = await step(load, "terrain", () => valleyTerrain(SPAN, seed));
   const W = terrain.width, D = terrain.depth;
   const S = terrain.waterLevel - 1; // top water voxel
   const heightAt = (x: number, z: number) => terrain.heights[x + z * W];
@@ -86,7 +91,7 @@ if (app) {
   const { base: s0 } = palette.allocate(settlement, "settlement");
   const PATH = s0, PATH2 = s0 + 1, YARD = s0 + 2;
 
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load) });
   // ?selftest: bands showing which stage of the voxel lookup works on this GPU.
   { const st = new URLSearchParams(location.search).get("selftest"); if (st !== null) renderer.setDebug(st === "3" ? 9 : st === "2" ? 8 : 7); }
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
@@ -116,6 +121,9 @@ if (app) {
   const frame = () => camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch());
 
   const adapter = gpu.adapterInfo;
+  const perfLabel =
+    ([adapter.vendor, adapter.architecture, adapter.description].filter(Boolean).join(" · ") || "unknown adapter") +
+    `${gpu.software ? " (software)" : ""} · quality ${quality}`;
   const perf = makePerf({
     enabled: params.has("perf"),
     scale: gpu.renderScale,
@@ -124,9 +132,7 @@ if (app) {
     // The water keeps this page rendering while the view is still; never
     // re-probe then, or each probe shows as a faint resample of the image.
     retryAfterMs: Infinity,
-    label:
-      ([adapter.vendor, adapter.architecture, adapter.description].filter(Boolean).join(" · ") || "unknown adapter") +
-      `${gpu.software ? " (software)" : ""} · quality ${quality}`,
+    label: perfLabel,
   });
 
   // Time of day: 0.5 is noon, 1.0 midnight. A toggle always runs forwards.
@@ -187,9 +193,6 @@ if (app) {
   const models = new Map<string, Entity[]>();
 
   async function buildPools(): Promise<number> {
-    const report = (done: number, total: number) => {
-      info.textContent = `generating ${done}/${total} models`;
-    };
     const total = species.reduce((n, sp) => n + sp.count, 0);
     const adopt = (sp: Species, mine: Entity[]) => {
       models.set(sp.key, mine);
@@ -198,6 +201,7 @@ if (app) {
     if (useWorkers && typeof Worker !== "undefined") {
       const workers = makeGeneratorPool({
         spawn: () => new Worker(new URL("./gen.worker.ts", import.meta.url), { type: "module" }),
+        load,
       });
       try {
         await workers.ready();
@@ -209,7 +213,7 @@ if (app) {
             entityId: `${sp.key}-${n}`,
           })),
         );
-        const out = await workers.generateMany(specs, report);
+        const out = await workers.generateMany(specs);
         let i = 0;
         for (const sp of species) { adopt(sp, out.slice(i, i + sp.count)); i += sp.count; }
         return out.length;
@@ -219,17 +223,21 @@ if (app) {
         workers.destroy();
       }
     }
-    let done = 0;
+    // The fallback reports into the same phase, though it blocks until it is done.
+    const task = load.task("models", total);
     for (const sp of species) {
-      adopt(sp, Array.from({ length: sp.count }, (_, n) => { const e = sp.make(n); report(++done, total); return e; }));
+      adopt(sp, Array.from({ length: sp.count }, (_, n) => { const e = sp.make(n); task.tick(1, { label: sp.generator }); return e; }));
     }
-    return done;
+    task.end();
+    return total;
   }
 
   const t0 = performance.now();
   const modelCount = await buildPools();
   const tModels = performance.now() - t0;
-  info.textContent = "laying out the village";
+  // An app phase: the layout blocks for a moment, so show it a frame before starting.
+  const layout = load.task("layout");
+  await nextFrame();
 
   // --- the settlement ----------------------------------------------------------------
   // Houses, levelled pads, footpaths and what grows where: ./layout.ts, shared
@@ -239,6 +247,7 @@ if (app) {
   const maxY = terrain.maxY();
   /** The settlement's surface over the terrain's: paths and yards. */
   const topOverride = valley.topOverride({ path: PATH, pathWorn: PATH2, yard: YARD });
+  layout.end();
 
   // --- the world --------------------------------------------------------------------------
   const counted = new Map<Entity, number>();
@@ -268,6 +277,7 @@ if (app) {
     size: SIZE,
     chunk: CHUNK,
     seed,
+    load,
     generate(ctx) {
       ctx.edit({ ...ctx.box, y1: maxY }, (cells, ox, oy, oz) => terrain.fillBrick(cells, ox, oy, oz, terrainBase, topOverride));
 
@@ -435,12 +445,10 @@ if (app) {
   const RADIUS = Number(params.get("radius") ?? SIZE.x * 1.5);
   const tgt = () => orbit.target();
   world.focus(tgt()[0], tgt()[2], RADIUS);
-  const totalChunks = world.pending;
   while (world.pending) {
-    const left = world.step(12);
-    info.textContent = `building ${totalChunks - left}/${totalChunks} chunks`;
+    world.step(12);
     loop.invalidate();
-    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    await nextFrame();
   }
   // Keep the world following the view as it pans, at a bounded cost.
   let focusX = tgt()[0], focusZ = tgt()[2];
@@ -458,10 +466,12 @@ if (app) {
 
   const secs = ((performance.now() - t0) / 1000).toFixed(1);
   const mem = renderer.stats();
+  screen.ready();
   info.textContent =
     `${housesPlaced} houses, ${treesPlaced} trees, ${rocksPlaced} rocks, ${placed - rocksPlaced - treesPlaced} other plants from ${modelCount} models · ` +
     `${(tModels / 1000).toFixed(1)}s gen, ${secs}s total · ${(voxels / 1000).toFixed(0)}k voxels · ` +
     `${palette.used}/255 palette slots · ${(mem.bytes / 1048576).toFixed(0)} MB of bricks · ` +
     `drag the lamp · N night/day · W weather · drag to turn, right-drag to pan, wheel to zoom`;
   loop.invalidate();
+  void reportLoadTimeline(load, { perf: params.has("perf"), overlay: perf, label: perfLabel });
 }

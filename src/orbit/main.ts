@@ -4,12 +4,14 @@
 
 import { createRenderer, OccupancyGrid, makeCamera, observeResize, resizeToDisplay } from "@voxolith/renderer";
 import { createInput, makeOrbitController, prepareSurface } from "@voxolith/engine/input";
+import { trackRenderer } from "@voxolith/engine";
 import { boot, runLoop } from "../shared/boot";
+import { reportLoadTimeline } from "../shared/loading";
 import { DAYLIGHT } from "../shared/env";
 
 const app = await boot("orbit");
 if (app) {
-  const { gpu, canvas } = app;
+  const { gpu, canvas, load, screen } = app;
 
   // A 96×32×96 grid: layered sine hills with three palette slots (grass,
   // dirt, water). Slot 0 is always empty.
@@ -30,7 +32,7 @@ if (app) {
   palette.set([0.45, 0.33, 0.22, 1], DIRT * 4);
   palette.set([0.25, 0.5, 0.85, 1], WATER * 4);
 
-  const renderer = await createRenderer(gpu, { size, data, palette });
+  const renderer = await createRenderer(gpu, { size, data, palette }, { onLoad: trackRenderer(load) });
   // ?selftest: bands showing which stage of the voxel lookup works on this GPU.
   { const st = new URLSearchParams(location.search).get("selftest"); if (st !== null) renderer.setDebug(st === "3" ? 9 : st === "2" ? 8 : 7); }
   renderer.updateCoarse(new OccupancyGrid(size, data).data);
@@ -54,4 +56,6 @@ if (app) {
     target: [size.x / 2, 8, size.z / 2], pan: "secondary", fovDeg: 35,
   });
   loop.invalidate();
+  screen.ready();
+  void reportLoadTimeline(load, { perf: false });
 }

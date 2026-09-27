@@ -55,7 +55,7 @@
 
 import { createRenderer, firstPersonFrame, observeResize, QUALITY_PRESETS, resizeToDisplay, type PointLight, type QualityPreset, type RenderQuality, type Renderer, type Vec3 } from "@voxolith/renderer";
 import { hashSeed, seededRandom, sparseDims } from "@voxolith/renderer/core";
-import { makeChunkedWorld, makeInstanceLayer, PaletteAllocator, type Entity, type EntityModel, type InstanceLayer, type InstancePlacement } from "@voxolith/engine";
+import { makeChunkedWorld, makeInstanceLayer, PaletteAllocator, trackRenderer, type Entity, type EntityModel, type InstanceLayer, type InstancePlacement } from "@voxolith/engine";
 import { makeAnimator, makeCrowd, type CrowdMember } from "@voxolith/engine/animation";
 import { makeGeneratorPool } from "@voxolith/engine/worker";
 import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
@@ -67,6 +67,7 @@ import { PRESETS as ROCKS, cloneParams as cloneRock } from "@voxolith/gen-rock";
 import { PRESETS as BUILDINGS } from "@voxolith/gen-building";
 import { atScale, generateCreature, PRESETS as RATS } from "@voxolith/gen-creature";
 import { boot, runLoop } from "../shared/boot";
+import { nextFrame, reportLoadTimeline } from "../shared/loading";
 import { pickScale, voxelSize } from "../shared/scale";
 
 const tStart = performance.now();
@@ -76,7 +77,9 @@ const num = (key: string, fallback: number) => (params.has(key) && Number.isFini
 
 const app = await boot("bench");
 if (app) {
-  const { gpu, canvas, info } = app;
+  // `tracker` is boot's load tracker, shown by its loading screen (`load` below is the bench's own
+  // coarse timing, reported in window.bench.stats()).
+  const { gpu, canvas, info, load: tracker, screen } = app;
   const VPM = pickScale(params, false, 20);
   const title = document.querySelector("#hud .brand small");
   if (title) title.textContent = `bench · ${voxelSize(VPM)} voxels`;
@@ -164,11 +167,10 @@ if (app) {
   const fine = new Map<string, Entity>();
   let t = performance.now();
   {
-    const workers = makeGeneratorPool({ spawn: () => new Worker(new URL("../world/gen.worker.ts", import.meta.url), { type: "module" }) });
+    const workers = makeGeneratorPool({ spawn: () => new Worker(new URL("../world/gen.worker.ts", import.meta.url), { type: "module" }), load: tracker });
     await workers.ready();
     const out = await workers.generateMany(
       all.map((k) => ({ generator: k.generator, params: k.params, seed: k.seed, entityId: k.key, ctx: { voxelsPerMetre: VPM } })),
-      (done, total) => { info.textContent = `generating ${done}/${total} models at ${VPM} voxels per metre${workers.cached ? ` (${workers.cached} from the cache)` : ""}`; },
     );
     workers.destroy();
     all.forEach((k, i) => fine.set(k.key, out[i]));
@@ -182,14 +184,14 @@ if (app) {
   const palette = new PaletteAllocator(1);
   const { base: groundBase } = palette.allocate(terrain.roles, "terrain");
   const rockBase = KINDS.rocks.map((k) => palette.allocate(fine.get(k.key)!.model.roles, k.key).base);
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(tracker) });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   renderer.setQuality(START_QUALITY);
   gpu.renderScale = RENDER_SCALE;
 
   const ground = refineTerrain(terrain, K, { seed });
   const floor = (x: number, z: number) => ground.heightAt(Math.max(0, Math.min(SIZE.x - 1, x)), Math.max(0, Math.min(SIZE.z - 1, z)));
-  const layer = makeInstanceLayer(renderer);
+  const layer = makeInstanceLayer(renderer, { load: tracker });
   const baseOf = (key: string) => layer.palettes.of(key, fine.get(key)!.model.roles);
 
   // --- the wood and the cottage, as instances -----------------------------------------------------
@@ -255,6 +257,7 @@ if (app) {
     size: SIZE,
     chunk: CHUNK,
     seed,
+    load: tracker,
     generate(ctx) {
       const boxes = [];
       for (let oz = ctx.box.z0; oz <= ctx.box.z1; oz += 8)
@@ -266,11 +269,9 @@ if (app) {
     },
   });
   world.focus(SIZE.x / 2, SIZE.z / 2, m(32), m(40));
-  const chunks = world.pending;
   while (world.pending) {
     world.step(40);
-    info.textContent = `building the ground ${chunks - world.pending}/${chunks} chunks`;
-    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    await nextFrame();
   }
   const BOULDERS: [number, number, number][] = [[21, 5, 0], [34, 4, 1], [36, 17, 2], [19, 13, 1], [7, 7, 0], [14, 3, 2]];
   for (const [x, z, k] of BOULDERS) stamp(fine.get(KINDS.rocks[k].key)!.model, m(x), floor(m(x), m(z)) + 1, m(z), rockBase[k]);
@@ -418,6 +419,8 @@ if (app) {
       }
   }, true);
   observeResize(canvas, loop);
+  screen.ready();
+  void reportLoadTimeline(tracker, { perf: false });
 
   const fps = () => (stamps.length > 1 ? ((stamps.length - 1) * 1000) / (stamps[stamps.length - 1] - stamps[0]) : 0);
   const gpuMs = () => {

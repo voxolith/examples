@@ -89,3 +89,87 @@ body.page h1 {
   font-size: 22px;
   margin: 0 0 8px;
 }
+
+/* Loading screen (src/shared/loading-screen.ts). No `visibility` anywhere: the test tools hide
+   everything but the canvas with it, and children inherit it. */
+.loading {
+  position: absolute; inset: 0; display: flex; overflow-y: auto; padding: 16px;
+  padding-top: max(16px, env(safe-area-inset-top)); padding-bottom: max(16px, env(safe-area-inset-bottom));
+  background: var(--bg); color: var(--text); opacity: 0;
+}
+/* Fades in only after SHOW_AFTER_MS (150 ms), so a quick page never shows it. */
+.loading.in { opacity: 1; transition: opacity 160ms ease-out 150ms; }
+.loading.now { opacity: 1; transition: none; }
+/* After ready(): no more input, then gone. */
+.loading.through { pointer-events: none; }
+.loading.leaving { opacity: 0; transition: opacity 250ms ease-in; }
+/* Pinned near the top rather than centred, so the card grows downwards as rows arrive. */
+.loading-card {
+  margin: clamp(84px, 16vh, 180px) auto auto; width: 100%; max-width: 420px; min-width: 0;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px 18px 16px;
+  box-shadow: var(--shadow);
+}
+.loading-head { display: flex; align-items: center; gap: 12px; }
+.loading-head img { width: 40px; height: 40px; flex: none; }
+.loading-head h1 { margin: 0; font-size: 18px; line-height: 1.2; color: var(--text); }
+.loading-blurb { margin: 2px 0 0; color: var(--text-muted); }
+.loading-phases { list-style: none; margin: 14px 0 12px; padding: 0; display: grid; gap: 6px; line-height: 1.35; }
+.loading-row, .loading-overall {
+  display: grid; grid-template-columns: 1.1em minmax(0, 1fr) auto; gap: 3px 8px; align-items: baseline;
+}
+.loading-overall { grid-template-columns: minmax(0, 1fr) auto; padding-top: 12px; border-top: 1px solid var(--border); }
+.loading-mark { color: var(--accent); font-weight: 700; text-align: center; }
+.loading-name { min-width: 0; overflow-wrap: anywhere; }
+.loading-count { color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 12px; }
+/* A finished row: dimmed, ticked, and without its bar, so a long load stays compact. */
+.loading-row.done { color: var(--text-muted); opacity: 0.7; }
+.loading-row.done .loading-bar { display: none; }
+.loading-bar {
+  grid-column: 2 / -1; display: block; height: 3px; border-radius: 2px; overflow: hidden; background: var(--control);
+}
+.loading-overall .loading-bar { grid-column: 1 / -1; height: 6px; border-radius: 3px; }
+.loading-bar > i {
+  display: block; height: 100%; background: var(--accent); transform-origin: left; transform: scaleX(0);
+  transition: transform 200ms ease-out;
+}
+/* An uncounted phase while busy: a sliding bar, since there is nothing to count. */
+.loading-row.busy:not(.counted) .loading-bar > i {
+  width: 35%; transform: none !important; transition: none; animation: loading-slide 1.2s ease-in-out infinite;
+}
+.loading.failed .loading-bar > i { animation: none !important; }
+@keyframes loading-slide {
+  from { margin-left: -35%; }
+  to { margin-left: 100%; }
+}
+.loading-error {
+  margin-top: 14px; padding: 8px 10px; border: 1px solid var(--danger); border-radius: 8px; color: var(--text);
+  font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 40vh; overflow: auto;
+}
+.loading-error[hidden] { display: none; }
+/* The corner pill: what is still streaming after the first picture. Never takes input. */
+.loading-pill {
+  position: absolute; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); max-width: calc(100% - 24px);
+  display: flex; align-items: center; gap: 8px; pointer-events: none;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px 4px 10px;
+  box-shadow: var(--shadow); color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums;
+  opacity: 0; transition: opacity 200ms;
+}
+.loading-pill > span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.loading-pill > i {
+  flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+}
+.loading-pill.on { opacity: 1; }
+.loading-pill.on > i { animation: loading-pulse 1.2s ease-in-out infinite; }
+.loading-pill.failed { border-color: var(--danger); color: var(--text); border-radius: 10px; }
+.loading-pill.failed > span { white-space: normal; }
+.loading-pill.failed > i { background: var(--danger); animation: none; }
+@keyframes loading-pulse {
+  50% { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .loading.in { transition: opacity 0s linear 150ms; }
+  .loading.leaving, .loading-pill { transition: none; }
+  .loading-bar > i { transition: none; }
+  .loading-row.busy:not(.counted) .loading-bar > i { animation: none; width: 100%; margin-left: 0; opacity: 0.45; }
+  .loading-pill.on > i { animation: none; }
+}

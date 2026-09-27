@@ -1,5 +1,8 @@
 // Shared startup: grab the canvas, init WebGPU, and show the engine's
 // "unsupported" card instead of a blank page when navigator.gpu is missing.
+// It also starts the page's load tracker and loading screen, so every page
+// shows its load the same way: the page reports into `load` and calls
+// `screen.ready()` once it has drawn.
 
 import {
   initGpu,
@@ -9,7 +12,9 @@ import {
   type FrameLoop,
   type GpuContext,
 } from "@voxolith/renderer";
+import { makeLoadTracker, type LoadTracker } from "@voxolith/engine";
 import "./styles.css";
+import { NO_SCREEN, showLoadingScreen, type LoadingScreen } from "./loading-screen";
 import { initTheme } from "../brand/theme";
 
 const MARK = `<img src="${import.meta.env.BASE_URL}brand/logo-mark.svg" alt="" width="72" height="72">`;
@@ -18,25 +23,45 @@ export interface Booted {
   gpu: GpuContext;
   canvas: HTMLCanvasElement;
   info: HTMLElement;
+  /** The page's load tracker: pass it to the renderer (`trackRenderer`) and the loaders. */
+  load: LoadTracker;
+  /** The loading screen reading `load`: call `ready()` once the page has drawn. */
+  screen: LoadingScreen;
 }
 
-export async function boot(appName: string): Promise<Booted | null> {
+/** Options for {@link boot}. */
+export interface BootOptions {
+  /**
+   * Show the loading screen from the start (default true). A page that waits for the user first
+   * (minecraft-region) passes false and opens a screen of its own when its load starts.
+   */
+  loading?: boolean;
+}
+
+export async function boot(appName: string, opts: BootOptions = {}): Promise<Booted | null> {
   const canvas = document.getElementById("scene") as HTMLCanvasElement | null;
   const info = document.getElementById("info");
   if (!canvas || !info) throw new Error("Missing #scene / #info");
   initTheme(document.getElementById("theme-toggle"));
   // On a phone the info is one line; a tap shows the rest.
   info.addEventListener("click", () => info.classList.toggle("open"));
+  const load = makeLoadTracker();
+  const screen = opts.loading === false ? NO_SCREEN : showLoadingScreen(load, { title: appName });
+  const device = load.task("device");
   try {
     const gpu = await initGpu(canvas);
     reportGpuErrors(gpu);
-    return { gpu, canvas, info };
+    return { gpu, canvas, info, load, screen };
   } catch (err) {
     if (err instanceof WebGPUUnsupportedError) {
+      screen.dispose();
       showUnsupportedScreen(err.message, { appName, iconHtml: MARK });
       return null;
     }
+    screen.fail(err);
     throw err;
+  } finally {
+    device.end();
   }
 }
 

@@ -5,10 +5,15 @@
 
 import { createRenderer, OccupancyGrid, buildMinecraftRegion, firstPersonFrame, resizeToDisplay, type Renderer } from "@voxolith/renderer";
 import { axis, button, createInput, makeActions, makeLookController, makeTouchControls, prepareSurface } from "@voxolith/engine/input";
+import { makeLoadTracker, trackRenderer } from "@voxolith/engine";
 import { boot, runLoop } from "../shared/boot";
+import { reportLoadTimeline, step } from "../shared/loading";
+import { NO_SCREEN, showLoadingScreen } from "../shared/loading-screen";
+import { PAGE_BLURBS } from "../shared/loading-labels";
 import { DAYLIGHT } from "../shared/env";
 
-const app = await boot("minecraft-region");
+// Nothing loads until a file is dropped, so no loading screen at the start: each drop opens one.
+const app = await boot("minecraft-region", { loading: false });
 if (app) {
   const { gpu, canvas, info } = app;
   let renderer: Renderer | null = null;
@@ -35,23 +40,32 @@ if (app) {
   });
   const eye: [number, number, number] = [0, 0, 0];
 
+  let screen = NO_SCREEN;
   async function load(buf: ArrayBuffer, name: string) {
     info.textContent = `${name}: building…`;
+    // A tracker and a loading screen per file: the file name as the title.
+    screen.dispose();
+    const tracker = makeLoadTracker();
+    screen = showLoadingScreen(tracker, { title: name, blurb: PAGE_BLURBS["minecraft-region"] });
     try {
       // A 256×256 block crop from the middle of the region, every 2nd block.
-      const scene = await buildMinecraftRegion(new Uint8Array(buf), {
+      const scene = await step(tracker, "region", () => buildMinecraftRegion(new Uint8Array(buf), {
         x0: 128, x1: 383, z0: 128, z1: 383, downsample: 2,
-      });
+      }));
       const r = await createRenderer(gpu, {
         size: scene.size, data: scene.data, palette: scene.palette, materials: scene.materials,
-      });
+      }, { onLoad: trackRenderer(tracker) });
       r.updateCoarse(new OccupancyGrid(scene.size, scene.data).data);
       renderer = r;
       eye[0] = scene.size.x / 2; eye[1] = scene.size.y * 0.8; eye[2] = -10;
       look.set(0, -15);
       info.textContent = `${name} · ${scene.meta.chunks} chunks · ${scene.meta.voxels.toLocaleString()} voxels · click to look, WASD move, Space/C up/down, Shift fast`;
+      // The loop draws the new renderer on its next frame.
+      screen.ready();
+      void reportLoadTimeline(tracker, { perf: false });
     } catch (e) {
       info.textContent = `${name}: ${(e as Error).message}`;
+      screen.fail(e);
     }
   }
 

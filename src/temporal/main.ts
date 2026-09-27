@@ -51,7 +51,7 @@ import {
   type Vec3,
 } from "@voxolith/renderer";
 import { hashSeed, seededRandom } from "@voxolith/renderer/core";
-import { blitModelToBricks, PaletteAllocator, type Entity, type Orientation, type Role } from "@voxolith/engine";
+import { blitModelToBricks, PaletteAllocator, trackRenderer, type Entity, type Orientation, type Role } from "@voxolith/engine";
 import { createInput, makeOrbitController, prepareSurface } from "@voxolith/engine/input";
 import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
 import { generateTerrain } from "@voxolith/gen-terrain";
@@ -59,6 +59,7 @@ import { generateTree, PRESETS as TREES } from "@voxolith/gen-tree";
 import { generateRock, PRESETS as ROCKS } from "@voxolith/gen-rock";
 import { generateBuilding, PRESETS as BUILDINGS } from "@voxolith/gen-building";
 import { boot } from "../shared/boot";
+import { nextFrame, reportLoadTimeline, step } from "../shared/loading";
 import { isPhone } from "../shared/scale";
 
 const params = new URLSearchParams(location.search);
@@ -96,14 +97,14 @@ function lighting(phase: number, ambient: number) {
 
 const app = await boot("temporal");
 if (app) {
-  const { gpu, canvas, info } = app;
+  const { gpu, canvas, info, load, screen } = app;
   const t0 = performance.now();
   const phone = isPhone(gpu, params);
   const rng = seededRandom(seed);
 
   // --- ground ------------------------------------------------------------------
   // Low hills, no water (water animates, and would keep the page drawing).
-  const terrain = generateTerrain({ width: SIZE.x, depth: SIZE.z, height: SIZE.y, baseY: 14, relief: 5, featureSize: 150, waterLevel: 2, river: { enabled: false, width: 0, depth: 0, banks: 0, meander: 100 } }, seed);
+  const terrain = await step(load, "terrain", () => generateTerrain({ width: SIZE.x, depth: SIZE.z, height: SIZE.y, baseY: 14, relief: 5, featureSize: 150, waterLevel: 2, river: { enabled: false, width: 0, depth: 0, banks: 0, meander: 100 } }, seed));
   const H = terrain.heights, W = SIZE.x;
   const hAt = (x: number, z: number) => H[Math.max(0, Math.min(W - 1, Math.round(x))) + Math.max(0, Math.min(SIZE.z - 1, Math.round(z))) * W];
   // A level pad for the cottage, blended into the hills over 12 voxels.
@@ -124,10 +125,14 @@ if (app) {
     const base = palette.allocate(entity.model.roles, key).base;
     place.push({ entity, base, x, z, o });
   };
+  // Generated on the main thread, eleven models, counted as they come.
+  const models = load.task("models", 11);
+  await nextFrame();
   // The cottage with every window lit, so it glows in the dark (as in nightwood).
   const cottage = structuredClone(BUILDINGS.cottage);
   cottage.look.lit = 1;
   add(generateBuilding(cottage, seededRandom(seed + 1)).entity, "cottage", C, C, 0);
+  models.tick();
   // Six trees on a ring round the cottage, two of each kind.
   const kinds = ["oak", "birch", "spruce"] as const;
   for (let i = 0; i < 6; i++) {
@@ -135,15 +140,18 @@ if (app) {
     p.shape.height = 70 + Math.round(rng() * 30);
     const a = (i / 6) * Math.PI * 2 + 0.4 + rng() * 0.5, r = 88 + rng() * 40;
     add(generateTree(p, seededRandom(seed + 10 + i)).entity, `tree${i}`, C + Math.cos(a) * r, C + Math.sin(a) * r);
+    models.tick();
   }
   const rocks = ["boulder", "mossy", "sandstone", "pebbles"];
   for (let i = 0; i < rocks.length; i++) {
     const a = (i / rocks.length) * Math.PI * 2 + 1.2, r = 62 + rng() * 14;
     add(generateRock(ROCKS[rocks[i]], seededRandom(seed + 20 + i)).entity, `rock${i}`, C + Math.cos(a) * r * 1.2, C + Math.sin(a) * r);
+    models.tick();
   }
+  models.end();
 
   // --- renderer ----------------------------------------------------------------------
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load) });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   const asked = params.get("quality") as QualityPreset | null;
   const quality: QualityPreset = asked && asked in QUALITY_PRESETS ? asked : gpu.software ? "low" : "medium";
@@ -153,8 +161,10 @@ if (app) {
   const canAccumulate = QUALITY_PRESETS[quality].shadowSteps > 0 || QUALITY_PRESETS[quality].ao;
   gpu.renderScale = Math.max(0.1, Math.min(1, num("renderScale", gpu.software ? 0.3 : phone ? 0.5 : gpu.renderScale)));
 
-  renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: terrain.maxY(), z1: SIZE.z - 1 }, (cells, ox, oy, oz) => terrain.fillBrick(cells, ox, oy, oz, groundBase));
-  for (const p of place) blitModelToBricks(renderer, p.entity.model, { x: Math.round(p.x), y: hAt(p.x, p.z) + 1, z: Math.round(p.z) }, p.base, p.o);
+  await step(load, "scene", () => {
+    renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: terrain.maxY(), z1: SIZE.z - 1 }, (cells, ox, oy, oz) => terrain.fillBrick(cells, ox, oy, oz, groundBase));
+    for (const p of place) blitModelToBricks(renderer, p.entity.model, { x: Math.round(p.x), y: hAt(p.x, p.z) + 1, z: Math.round(p.z) }, p.base, p.o);
+  });
 
   // Two lamp posts: a 2x2 iron pole with an arm reaching towards the cottage
   // and a point light hanging under its end, drawn by its glow. The light
@@ -317,4 +327,6 @@ if (app) {
   info.textContent = `${place.length} models, 2 lamps · built in ${((performance.now() - t0) / 1000).toFixed(1)} s · ${(mem.bytes / 1048576).toFixed(0)} MB · ${quality}${phone ? " (phone)" : ""} · T toggles · drag to turn, wheel to zoom`;
   syncLoop();
   loop.invalidate();
+  screen.ready();
+  void reportLoadTimeline(load, { perf: false });
 }

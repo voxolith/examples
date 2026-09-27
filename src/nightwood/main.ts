@@ -21,11 +21,12 @@
 //   (up to 28), ?seed=, ?full (desktop settings on a phone),
 //   ?weather= (any ATMOSPHERES name, default fog; clear for no mist), ?mist= (its thickness,
 //   default 0.8), ?view= (the view distance in metres, default 24), ?trees=, ?shrubs=, ?plants=
-//   (densities, 0-1), ?renderScale= (a fixed render scale instead of the adaptive one).
+//   (densities, 0-1), ?renderScale= (a fixed render scale instead of the adaptive one), ?perf (the
+//   overlay, and the load timeline in the console).
 
 import { createRenderer, firstPersonFrame, makePerf, observeResize, QUALITY_PRESETS, resizeToDisplay, type PointLight, type Renderer, type Vec3 } from "@voxolith/renderer";
 import { hashSeed, seededRandom } from "@voxolith/renderer/core";
-import { makeChunkedWorld, makeInstanceLayer, PaletteAllocator, type Entity, type RGB } from "@voxolith/engine";
+import { makeChunkedWorld, makeInstanceLayer, PaletteAllocator, trackRenderer, type Entity, type RGB } from "@voxolith/engine";
 import { makeGeneratorPool } from "@voxolith/engine/worker";
 import { createInput, makeLookController, prepareSurface } from "@voxolith/engine/input";
 import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
@@ -35,6 +36,7 @@ import { PRESETS as BUSHES } from "@voxolith/gen-bush";
 import { PRESETS as GRASSES } from "@voxolith/gen-grass";
 import { PRESETS as BUILDINGS } from "@voxolith/gen-building";
 import { boot, runLoop } from "../shared/boot";
+import { nextFrame, reportLoadTimeline } from "../shared/loading";
 import { isPhone, pickScale, voxelSize } from "../shared/scale";
 
 const params = new URLSearchParams(location.search);
@@ -43,7 +45,9 @@ const num = (key: string, fallback: number) => (params.has(key) ? Number(params.
 
 const app = await boot("nightwood");
 if (app) {
-  const { gpu, canvas, info } = app;
+  const { gpu, canvas, info, load, screen } = app;
+  // One tracker for the whole load (boot's: workers, renderer, instance layer, ground, and the
+  // page's own "wood" phase); the loading screen shows it until the clearing is up.
   // A phone: touch-only pointer or the small storage bindings mobile GPUs offer (as the valley).
   const phone = isPhone(gpu, params);
   // 50 voxels per metre (2 cm) by default, 20 (5 cm) on a phone; the HUD's scale button reloads one
@@ -107,11 +111,10 @@ if (app) {
 
   const fine = new Map<string, Entity>();
   {
-    const workers = makeGeneratorPool({ spawn: () => new Worker(new URL("../world/gen.worker.ts", import.meta.url), { type: "module" }) });
+    const workers = makeGeneratorPool({ spawn: () => new Worker(new URL("../world/gen.worker.ts", import.meta.url), { type: "module" }), load });
     await workers.ready();
     const out = await workers.generateMany(
       all.map((k) => ({ generator: k.generator, params: k.params, seed: k.seed, entityId: k.key, ctx: { voxelsPerMetre: VPM } })),
-      (done, total) => { info.textContent = `generating ${done}/${total} models at ${VPM} voxels per metre${workers.cached ? ` (${workers.cached} from the cache)` : ""}`; },
     );
     workers.destroy();
     all.forEach((k, i) => fine.set(k.key, out[i]));
@@ -120,7 +123,7 @@ if (app) {
   // --- renderer ------------------------------------------------------------------------------------
   const palette = new PaletteAllocator(1);
   const { base: groundBase } = palette.allocate(terrain.roles, "terrain");
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load) });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   const quality = gpu.software ? "low" : phone ? "medium" : "high";
   // The view distance bounds every primary ray (about 1.7 steps per voxel of it at worst).
@@ -130,12 +133,16 @@ if (app) {
 
   const ground = refineTerrain(terrain, K, { seed });
   const floor = (x: number, z: number) => ground.heightAt(Math.max(0, Math.min(SIZE.x - 1, x)), Math.max(0, Math.min(SIZE.z - 1, z)));
-  const layer = makeInstanceLayer(renderer);
+  const layer = makeInstanceLayer(renderer, { load });
   // A darker, cooler night skin for the foliage: the moon does not show greens as the sun does.
   const night = (c: RGB): RGB => [c[0] * 0.8, c[1] * 0.85, c[2] * 0.95];
   const baseOf = (key: string) => layer.palettes.of(key, fine.get(key)!.model.roles, key === "house" ? undefined : night);
 
   // --- the wood ----------------------------------------------------------------------------------
+  // Placing the wood, uploading its models (the engine's "upload") and indexing the instances
+  // ("placement") block for a while, so an app phase around all three is shown a frame first.
+  const wood = load.task("wood");
+  await nextFrame();
   const rng = seededRandom(seed ^ 0x77);
   const statics: { model: Entity["model"]; x: number; y: number; z: number; yaw: number; base: number }[] = [];
   const place = (key: string, x: number, z: number) => {
@@ -180,6 +187,7 @@ if (app) {
   statics.push({ model: house.model, x: Math.round(H[0]), y: floor(H[0], H[1]) + 1, z: Math.round(H[1]), yaw: HOUSE_DIR + Math.PI, base: baseOf("house") });
   layer.setStatic(statics);
   layer.commit();
+  wood.end();
 
   // --- the ground, around the clearing as far as the fog reaches -------------------------------
   const CHUNK = 256;
@@ -188,6 +196,7 @@ if (app) {
     size: SIZE,
     chunk: CHUNK,
     seed,
+    load,
     generate(ctx) {
       const boxes = [];
       for (let oz = ctx.box.z0; oz <= ctx.box.z1; oz += 8)
@@ -200,11 +209,9 @@ if (app) {
   });
   const REACH = m(32);
   world.focus(C[0], C[1], REACH, REACH * 1.2);
-  const total = world.pending;
   while (world.pending) {
     world.step(40);
-    info.textContent = `building the forest floor ${total - world.pending}/${total} chunks`;
-    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    await nextFrame();
   }
 
   // --- lights --------------------------------------------------------------------------------------
@@ -279,8 +286,10 @@ if (app) {
     renderer.render({ ...firstPersonFrame(eye, look.yaw(), look.pitch(), 68), ...atm, fog, time: t });
   }, true);
   observeResize(canvas, loop);
+  screen.ready();
   info.textContent =
     `${VPM} voxels/m${phone ? " (phone settings; ?full for all)" : ""} · ${trees} trees, ${shrubs} shrubs, ${plants} plants, ${FIREFLIES} fireflies · ` +
     "drag or click to look around (Q/E/R/F)";
+  void reportLoadTimeline(load, { perf: params.has("perf"), overlay: perf });
   if (params.has("e2e")) Object.assign(window, { nightwood: { look: () => [look.yaw(), look.pitch()], flies: () => lights((performance.now() - t0) / 1000).length } });
 }

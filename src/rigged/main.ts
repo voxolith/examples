@@ -18,12 +18,13 @@
 
 import { createRenderer, makeCamera, observeResize, resizeToDisplay, type Renderer } from "@voxolith/renderer";
 import { seededRandom } from "@voxolith/renderer/core";
-import { makeInstanceLayer, PaletteAllocator, type InstanceLayer, type InstancePlacement } from "@voxolith/engine";
+import { makeInstanceLayer, PaletteAllocator, trackRenderer, type InstanceLayer, type InstancePlacement } from "@voxolith/engine";
 import { makeAnimator, makeCrowd, type CrowdMember } from "@voxolith/engine/animation";
 import { createInput, makeOrbitController, prepareSurface } from "@voxolith/engine/input";
 import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
 import { atScale, generateCreature, PRESETS } from "@voxolith/gen-creature";
 import { boot, runLoop } from "../shared/boot";
+import { reportLoadTimeline, step } from "../shared/loading";
 
 const params = new URLSearchParams(location.search);
 const vpm = Number(params.get("vpm") ?? 10);
@@ -34,8 +35,8 @@ const SIZE = { x: 480, y: 48, z: 150 };
 
 const app = await boot("rigged");
 if (app) {
-  const { gpu, canvas, info } = app;
-  const rat = generateCreature(vpm > 10 ? atScale(PRESETS.rat, vpm) : PRESETS.rat, seededRandom(11), "rat").entity;
+  const { gpu, canvas, info, load, screen } = app;
+  const rat = await step(load, "creatures", () => generateCreature(vpm > 10 ? atScale(PRESETS.rat, vpm) : PRESETS.rat, seededRandom(11), "rat").entity);
   const clips = rat.clips!.map((c) => c.id).slice(0, Math.max(1, Number(params.get("pairs") ?? 99)));
 
   // Ground in two tones: under the baked rat of each pair, and under the one posed on the GPU.
@@ -48,7 +49,7 @@ if (app) {
     "ground",
   );
   const ratBase = palette.allocate(rat.model.roles, "rat").base;
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load) });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   renderer.setQuality(gpu.software ? "low" : "high");
   renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: 3, z1: SIZE.z - 1 }, (cells, ox, oy) => {
@@ -58,7 +59,7 @@ if (app) {
   });
 
   // One layer, two crowds: each collects its placements and the page commits both together.
-  const layer = makeInstanceLayer(renderer);
+  const layer = makeInstanceLayer(renderer, { load });
   const collect = (): InstanceLayer & { list: readonly InstancePlacement[] } => {
     const c = { ...layer, list: [] as readonly InstancePlacement[], setDynamic(l: readonly InstancePlacement[]) { c.list = l; }, commit() {} };
     return c;
@@ -98,4 +99,6 @@ if (app) {
     renderer.render({ ...f, ...sky, time: now / 1000 });
   }, true);
   observeResize(canvas, loop);
+  screen.ready();
+  void reportLoadTimeline(load, { perf: false });
 }
