@@ -22,7 +22,7 @@ Siblings needed: renderer, engine, generators.
 
 - `src/shared/boot.ts`: `boot(name)` (device, canvas, HUD, software warning) and `runLoop`.
 - `src/world/layout.ts`: the shared valley design (terrain, sites, houses, pads, paths,
-  scatter). `world` (10 vox/m) and `valley` (100 vox/m) both read it; change the layout there,
+  scatter). `world` (10 vox/m) and `valley` (50 vox/m by default, 100 with `?vpm=100`) both read it; change the layout there,
   never in one page.
 - `src/world/gen.worker.ts`: the shared generator worker. It caches models in IndexedDB in
   production builds (`serveGenerators({ cache })`, salted by the worker's hashed URL).

@@ -233,7 +233,7 @@ if (app) {
 
   // --- the settlement ----------------------------------------------------------------
   // Houses, levelled pads, footpaths and what grows where: ./layout.ts, shared
-  // with the 100 voxel/metre valley.
+  // with the valley page (50 or 100 voxels per metre).
   const valley = layoutValley({ terrain, span: SPAN, seed, season, models, pools, sites });
   const { houses } = valley;
   const maxY = terrain.maxY();

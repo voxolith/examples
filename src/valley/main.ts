@@ -1,24 +1,35 @@
-// valley — the world page's valley at 100 voxels per metre, a rat's-eye scale.
+// valley — the world page's valley at 50 or 100 voxels per metre, a rat's-eye scale.
 //
 // The same valley as ../world: its terrain, river, village, footpaths and
 // forest come from the same layout (../world/layout.ts), decided in the
-// world page's 10 voxels per metre and multiplied by ten here. What changes
-// is the resolution:
-//   - every model is generated at 100 voxels per metre: the generators
-//     refine their own design (single leaves and needles, bark furrows,
-//     bricks, tiles and mortar at real size, rounded rock), as sparse models;
+// world page's 10 voxels per metre and multiplied by five or ten here. What
+// changes is the resolution:
+//   - every model is generated at 50 (2 cm voxels, the default) or 100
+//     voxels per metre (1 cm): the generators refine their own design
+//     (single leaves and needles, bark furrows, bricks, tiles and mortar at
+//     real size, rounded rock), as sparse models;
 //   - models are drawn as instances, once each on the GPU however often they
 //     stand in the valley, at the layout's exact orientations;
 //   - the terrain is refined per brick (a smooth surface, grass blades,
 //     pebbles) and streamed in chunks around the view, since a 128 m valley
-//     of 1 cm voxels does not fit in memory at once;
+//     of centimetre voxels does not fit in memory at once;
 //   - rats, at their real size, roam the village as an instanced crowd.
 //
-// ?scale= sets the valley size as on the world page (default 4), ?variants=
-// the models per species (default 3; the world page uses 10, which matches
-// it exactly but needs over a gigabyte of GPU memory), ?rats= the crowd,
-// ?radius= the streamed radius in metres. Drag the lamp, N for night, W for
-// weather, as on the world page.
+// URL options:
+//   ?vpm=50|100 the voxels per metre (default 50; the HUD's scale button
+//               reloads at the other), ?scale= the valley size as on the
+//               world page (default 4), ?variants= the models per species
+//               (default 3; the world page uses 10, which matches it exactly
+//               but needs over a gigabyte of GPU memory at 100), ?rats= the
+//               crowd (default 60), ?radius= the streamed radius in metres
+//               (default 24), ?seed=, ?season=, ?time=night, ?weather=,
+//               ?rigged (rats posed on the GPU), ?perf, ?full (desktop
+//               settings on a phone).
+// A phone (a touch-only pointer, or storage bindings under 512 MiB) gets a
+// lighter profile: scale 2, one variant, 20 rats, a 16 m radius and the Low
+// preset; every option above still applies on its own.
+// Drag the lamp (or double-tap), N for night, W for weather, as on the
+// world page.
 
 import {
   createRenderer,
@@ -63,16 +74,30 @@ const app = await boot("valley");
 if (app) {
   const { gpu, canvas, info } = app;
 
-  // A phone gets a lighter valley: half the resolution (a quarter of the
-  // surface voxels to generate and draw), a smaller map, one model per
-  // species and fewer rats. Told apart by a touch-only pointer or the small
-  // storage bindings mobile GPUs offer. ?full asks for the desktop settings;
-  // every setting below can still be given on its own.
+  // A phone gets a lighter valley: a smaller map, one model per species,
+  // fewer rats and the Low preset. Told apart by a touch-only pointer or the
+  // small storage bindings mobile GPUs offer. ?full asks for the desktop
+  // settings; every setting below can still be given on its own.
   const phone =
     !params.has("full") &&
     ((matchMedia("(pointer: coarse)").matches && !matchMedia("(pointer: fine)").matches) || gpu.limits.maxStorageBufferBindingSize < 512 * 1048576);
+  // 50 voxels per metre (2 cm) by default everywhere; 100 (1 cm) is still too
+  // heavy for a desktop GPU. The HUD's scale button reloads at the other
+  // (?vpm=), since every model is generated for its scale.
   /** Voxels per metre here (50 or 100), and the factor over the world page's 10. */
-  const VPM = num("vpm", phone ? 50 : 100) >= 75 ? 100 : 50;
+  const VPM = num("vpm", 50) >= 75 ? 100 : 50;
+  const scaleButton = document.getElementById("scale-toggle") as HTMLButtonElement | null;
+  if (scaleButton) {
+    scaleButton.textContent = VPM === 100 ? "Switch to 2 cm" : "Switch to 1 cm";
+    scaleButton.title = `Switch to ${VPM === 100 ? 50 : 100} voxels per metre (reloads the scene)`;
+    scaleButton.onclick = () => {
+      const next = new URLSearchParams(location.search);
+      next.set("vpm", String(VPM === 100 ? 50 : 100));
+      location.search = next.toString();
+    };
+  }
+  const title = document.querySelector("#hud .brand small");
+  if (title) title.textContent = `valley · ${100 / VPM} cm voxels`;
   const K = VPM / 10;
   /** Lengths below are written for 1 cm voxels; this scales them to VPM. */
   const cm = VPM / 100;
@@ -197,6 +222,8 @@ if (app) {
 
   // --- the ground, streamed ---------------------------------------------------------------
   const CHUNK = 256;
+  /** Chunks built so far, for the e2e check that moving streams new ground. */
+  let built = 0;
   const world = makeChunkedWorld({
     target: renderer,
     size: SIZE,
@@ -205,6 +232,7 @@ if (app) {
     generate(ctx) {
       // A box per 8x8 brick column, sized to what the column holds: the
       // fine terrain answers a column's bricks in a run.
+      built++;
       const boxes = [];
       for (let oz = ctx.box.z0; oz <= ctx.box.z1; oz += 8)
         for (let ox = ctx.box.x0; ox <= ctx.box.x1; ox += 8) {
@@ -443,7 +471,7 @@ if (app) {
 
   if (params.has("e2e")) {
     Object.assign(window, {
-      valleyStats: () => ({ ...renderer.instanceStats(), houses: valley.houses.length, trees, rocks, plants, rats: members.length, resident: world.resident, pending: world.pending, first: members[0] ? { x: members[0].x, z: members[0].z } : null, ratSum: members.reduce((n, r) => n + r.x + r.z, 0) }),
+      valleyStats: () => ({ ...renderer.instanceStats(), houses: valley.houses.length, trees, rocks, plants, rats: members.length, resident: world.resident, pending: world.pending, built, first: members[0] ? { x: members[0].x, z: members[0].z } : null, ratSum: members.reduce((n, r) => n + r.x + r.z, 0) }),
       valleyPlaces: { village: [vx, vz], glade: [sites.GC[0] * K, sites.GC[1] * K], get rat() { return members[0] ? [members[0].x, members[0].z] : [vx, vz]; } },
       valleyLook: (x: number, z: number, distance: number, pitch: number, yaw?: number) => {
         spin = false;
