@@ -28,6 +28,7 @@ export default defineConfig({
         instances: page("instances/index.html"),
         valley: page("valley/index.html"),
         temporal: page("temporal/index.html"),
+        bench: page("bench/index.html"),
       },
     },
   },

@@ -1,4 +1,4 @@
-// The voxel scale of the fine-scale pages (valley, nightwood): which device
+// The voxel scale of the fine-scale pages (valley, nightwood, bench): which device
 // gets which voxels per metre, ?vpm=, and the HUD's scale button.
 
 import type { GpuContext } from "@voxolith/renderer";
@@ -24,14 +24,14 @@ export const voxelSize = (vpm: number) => `${100 / vpm} cm`;
 
 /**
  * The page's voxels per metre: `?vpm=` snapped to the nearest of
- * {@link SCALES}, or the device's default (20 on a phone, 50 elsewhere).
+ * {@link SCALES}, or the device's default (20 on a phone, 50 elsewhere; `fallback` overrides
+ * it for a page with a fixed default).
  * Wires the HUD's `#scale-toggle` button, which steps between the default and
  * one scale finer (a phone 20 and 50, a desktop 50 and 100) and, from any
  * other scale, back to the default. It reloads with every other URL option
  * kept, since every model is generated for its scale.
  */
-export function pickScale(params: URLSearchParams, phone: boolean): Scale {
-  const fallback: Scale = phone ? 20 : 50;
+export function pickScale(params: URLSearchParams, phone: boolean, fallback: Scale = phone ? 20 : 50): Scale {
   const asked = params.has("vpm") ? Number(params.get("vpm")) : NaN;
   const vpm = Number.isFinite(asked)
     ? SCALES.reduce((best, s) => (Math.abs(s - asked) < Math.abs(best - asked) ? s : best))
