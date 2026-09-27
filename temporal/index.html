@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>temporal — Voxolith Examples</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#151B29" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#F6F4EE" />
+    <script>try{var t=localStorage.getItem("voxolith-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="scene"></canvas>
+      <div id="hud"><div class="panel"><a class="brand" href="../"><img src="/brand/logo-mark.svg" alt=""> voxolith <small>temporal</small></a> <span id="info">building…</span> <button class="theme-toggle" id="theme-toggle" type="button"></button></div>
+        <div class="panel stats">
+          <div class="controls"><button class="time-toggle" id="temporal-toggle" type="button" aria-pressed="false">Temporal: off</button> <button class="time-toggle" id="rotate-toggle" type="button" title="Turn the camera, to read a moving view's cost" aria-pressed="false">Rotate: off</button> <button class="time-toggle" id="redraw-toggle" type="button" title="Draw every frame even when nothing changes, to read a still frame's cost" aria-pressed="false">Redraw: on demand</button> <select class="weather-select" id="angle" title="The moon's angular radius: how soft shadow edges are with temporal on" aria-label="Moon size"></select></div>
+          <pre class="readout" id="readout" aria-live="off">starting…</pre>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/temporal/main.ts"></script>
+  </body>
+</html>

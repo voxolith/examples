@@ -27,6 +27,7 @@ export default defineConfig({
         swarm: page("swarm/index.html"),
         instances: page("instances/index.html"),
         valley: page("valley/index.html"),
+        temporal: page("temporal/index.html"),
       },
     },
   },

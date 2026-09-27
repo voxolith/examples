@@ -6,7 +6,7 @@ Minimal example pages at https://voxolith.github.io/examples/. Each page is one
 `appPages` in `src/lib/shared.ts`).
 
 Pages: hello-vox, orbit, minecraft-region, world, valley, nightwood, creature, swarm, instances,
-rigged (plus the forest and village redirects).
+rigged, temporal (plus the forest and village redirects).
 
 ## Commands
 
