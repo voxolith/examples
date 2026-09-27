@@ -1,4 +1,4 @@
-// nightwood — standing in a forest clearing at night, at 100 voxels per metre.
+// nightwood — standing in a forest clearing at night, at 50 or 100 voxels per metre.
 //
 // A dense wood of oak, birch and spruce with bushes, bracken and grass underneath, lit by the
 // moon; through a gap in the trees a cottage with its windows lit and a lantern by the door; and
@@ -11,12 +11,14 @@
 // window glass, which lights only itself; the renderer's roadmap (temporal accumulation, then a
 // world-space radiance cache) is measured against this page.
 //
-// Models are generated at 100 voxels per metre on workers (the world page's generator worker,
-// with its model cache in production builds) and drawn as instances; the ground is refined per
-// brick column around the clearing. Phones get 50 voxels per metre, fewer fireflies and a lighter
-// preset. ?vpm=50|100, ?fireflies= (up to 28), ?seed=, ?full (desktop settings on a phone),
-// ?view= (the view distance in metres, default 24), ?renderScale= (a fixed render scale instead of
-// the adaptive one, for measuring).
+// Models are generated at 50 voxels per metre (2 cm; the HUD's button reloads at 100, 1 cm) on
+// workers (the world page's generator worker, with its model cache in production builds) and
+// drawn as instances; the ground is refined per brick column around the clearing. Phones get
+// fewer fireflies and a lighter preset. URL options:
+//   ?vpm=50|100 (default 50), ?fireflies= (up to 28), ?seed=, ?full (desktop settings on a phone),
+//   ?weather= (any ATMOSPHERES name, default fog; clear for no mist), ?mist= (its thickness,
+//   default 0.8), ?view= (the view distance in metres, default 24), ?trees=, ?shrubs=, ?plants=
+//   (densities, 0-1), ?renderScale= (a fixed render scale instead of the adaptive one).
 
 import { createRenderer, firstPersonFrame, makePerf, observeResize, QUALITY_PRESETS, resizeToDisplay, type PointLight, type Renderer, type Vec3 } from "@voxolith/renderer";
 import { hashSeed, seededRandom } from "@voxolith/renderer/core";
@@ -42,13 +44,27 @@ if (app) {
   const phone =
     !params.has("full") &&
     ((matchMedia("(pointer: coarse)").matches && !matchMedia("(pointer: fine)").matches) || gpu.limits.maxStorageBufferBindingSize < 512 * 1048576);
-  const VPM = num("vpm", phone ? 50 : 100) >= 75 ? 100 : 50;
+  // 50 voxels per metre (2 cm) by default; the HUD's scale button reloads at the other (?vpm=), since
+  // every model is generated for its scale.
+  const VPM = num("vpm", 50) >= 75 ? 100 : 50;
+  const scaleButton = document.getElementById("scale-toggle") as HTMLButtonElement | null;
+  if (scaleButton) {
+    scaleButton.textContent = VPM === 100 ? "Switch to 2 cm" : "Switch to 1 cm";
+    scaleButton.title = `Switch to ${VPM === 100 ? 50 : 100} voxels per metre (reloads the scene)`;
+    scaleButton.onclick = () => {
+      const next = new URLSearchParams(location.search);
+      next.set("vpm", String(VPM === 100 ? 50 : 100));
+      location.search = next.toString();
+    };
+  }
   /** Metres to voxels at this resolution. */
   const m = (metres: number) => metres * VPM;
   const K = VPM / 10;
   // Density knobs, 0-1 (for measuring what the scene costs): ?trees=, ?shrubs=, ?plants=.
   const DENSITY = { trees: num("trees", 1), shrubs: num("shrubs", 1), plants: num("plants", 1) };
   const FIXED_SCALE = num("renderScale", 0);
+  /** How thick the weather's fog is, times the engine's (?mist=). */
+  const MIST = Math.max(0, num("mist", 0.8));
   /** View distance, metres: the fog wall, and how far any ray goes. */
   const VIEW = Math.max(8, Math.min(40, num("view", 24)));
   const FIREFLIES = Math.max(0, Math.min(28, num("fireflies", phone ? 12 : 24)));
@@ -241,15 +257,19 @@ if (app) {
   const look = makeLookController(input, { yaw: (HOUSE_DIR * 180) / Math.PI, pitch: 2, keys: { left: ["KeyQ"], right: ["KeyE"], up: ["KeyR"], down: ["KeyF"] } });
   const perf = makePerf({ enabled: params.has("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.35, retryAfterMs: Infinity, gpuTimings: () => renderer.gpuTimings() });
 
-  // Night: the moon as the key light, a little brighter and bluer than the default night; dense
-  // fog in the wood's own blue-black, so nothing further than about 30 m is ever marched.
+  // Night: the moon as the key light, a little brighter and bluer than the default night. The
+  // weather (?weather=, default fog) is the engine's; its fog is recoloured to moonlit mist, since
+  // the night horizon it would take is almost black and reads as darkness, not mist.
   const moon = timeOfDay(0.98);
   moon.lightColor = [moon.lightColor[0] * 2.2, moon.lightColor[1] * 2.5, moon.lightColor[2] * 3];
   moon.ambientSky = moon.ambientSky.map((c) => c * 2) as Vec3;
   moon.ambientGround = moon.ambientGround.map((c) => c * 2) as Vec3;
-  const atm = atmosphereFrame(moon, ATMOSPHERES.clear, { voxelsPerMetre: VPM });
+  const weather = ATMOSPHERES[params.get("weather") as keyof typeof ATMOSPHERES] ?? ATMOSPHERES.fog;
+  const atm = atmosphereFrame(moon, weather, { voxelsPerMetre: VPM });
   // Rays stop at the view distance (fog.distance), where the fog closes: past it nothing is traced.
-  const fog = { density: 1.2 / m(30), color: [0.025, 0.035, 0.06] as Vec3, heightFalloff: 0, distance: m(VIEW) };
+  const fog = atm.fog
+    ? { ...atm.fog, density: atm.fog.density * MIST, color: [0.095, 0.11, 0.14] as Vec3, distance: m(VIEW) }
+    : { density: 1.2 / m(30), color: [0.025, 0.035, 0.06] as Vec3, heightFalloff: 0, distance: m(VIEW) };
 
   let last = performance.now();
   const t0 = performance.now();
