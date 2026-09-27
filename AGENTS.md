@@ -21,12 +21,17 @@ Siblings needed: renderer, engine, generators.
 ## Map
 
 - `src/shared/boot.ts`: `boot(name)` (device, canvas, HUD, software warning) and `runLoop`.
+- `src/shared/scale.ts`: the voxel scale of `valley` and `nightwood`: `isPhone` (the phone
+  profile test), `pickScale` (`?vpm=` snapped to 20, 50 or 100; default 50, 20 on a phone; the
+  HUD's scale button steps between the default and one scale finer).
 - `src/world/layout.ts`: the shared valley design (terrain, sites, houses, pads, paths,
-  scatter). `world` (10 vox/m) and `valley` (50 vox/m by default, 100 with `?vpm=100`) both read it; change the layout there,
-  never in one page.
+  scatter). `world` (10 vox/m) and `valley` (50 vox/m by default, 20 on a phone, 100 with
+  `?vpm=100`) both read it; change the layout there, never in one page. The valley's rats only
+  appear where gen-creature's `realSizeAt` holds (100 vox/m); `?rats=N` forces them.
 - `src/world/gen.worker.ts`: the shared generator worker. It caches models in IndexedDB in
   production builds (`serveGenerators({ cache })`, salted by the worker's hashed URL).
-- `src/nightwood/`: first person in a night forest at 100 vox/m, with fog as the view distance
+- `src/nightwood/`: first person in a night forest at 50 vox/m (20 on a phone, 100 with
+  `?vpm=100`), with fog as the view distance
   (`fog.distance`). This is the lighting showcase the renderer's roadmap is measured against.
 
 ## Rules for pages

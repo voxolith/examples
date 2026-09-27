@@ -1,4 +1,4 @@
-// The valley's design, shared by the world page and its 100 voxel/metre twin.
+// The valley's design, shared by the world page and its fine-scale twin (valley, 20 to 100 voxels per metre).
 //
 // Everything here is decided in the world page's own voxels (10 per metre):
 // the terrain and river, which models exist, where the village and the

@@ -1,4 +1,4 @@
-// nightwood — standing in a forest clearing at night, at 50 or 100 voxels per metre.
+// nightwood — standing in a forest clearing at night, at 20, 50 or 100 voxels per metre.
 //
 // A dense wood of oak, birch and spruce with bushes, bracken and grass underneath, lit by the
 // moon; through a gap in the trees a cottage with its windows lit and a lantern by the door; and
@@ -11,11 +11,14 @@
 // window glass, which lights only itself; the renderer's roadmap (temporal accumulation, then a
 // world-space radiance cache) is measured against this page.
 //
-// Models are generated at 50 voxels per metre (2 cm; the HUD's button reloads at 100, 1 cm) on
-// workers (the world page's generator worker, with its model cache in production builds) and
-// drawn as instances; the ground is refined per brick column around the clearing. Phones get
-// fewer fireflies and a lighter preset. URL options:
-//   ?vpm=50|100 (default 50), ?fireflies= (up to 28), ?seed=, ?full (desktop settings on a phone),
+// Models are generated at 50 voxels per metre (2 cm) on a desktop and 20 (5 cm) on a phone (a
+// touch-only pointer, or storage bindings under 512 MiB); the HUD's button reloads one scale finer
+// (100 or 50), or back. They are made on workers (the world page's generator worker, with its model
+// cache in production builds) and drawn as instances; the ground is refined per brick column
+// around the clearing. Phones also get fewer fireflies and a lighter preset. Every length is in
+// metres, so the scene is the same at every scale. URL options:
+//   ?vpm=20|50|100 (default 50, 20 on a phone; anything else snaps to the nearest), ?fireflies=
+//   (up to 28), ?seed=, ?full (desktop settings on a phone),
 //   ?weather= (any ATMOSPHERES name, default fog; clear for no mist), ?mist= (its thickness,
 //   default 0.8), ?view= (the view distance in metres, default 24), ?trees=, ?shrubs=, ?plants=
 //   (densities, 0-1), ?renderScale= (a fixed render scale instead of the adaptive one).
@@ -32,6 +35,7 @@ import { PRESETS as BUSHES } from "@voxolith/gen-bush";
 import { PRESETS as GRASSES } from "@voxolith/gen-grass";
 import { PRESETS as BUILDINGS } from "@voxolith/gen-building";
 import { boot, runLoop } from "../shared/boot";
+import { isPhone, pickScale, voxelSize } from "../shared/scale";
 
 const params = new URLSearchParams(location.search);
 const seed = hashSeed(params.get("seed") ?? "nightwood");
@@ -41,22 +45,12 @@ const app = await boot("nightwood");
 if (app) {
   const { gpu, canvas, info } = app;
   // A phone: touch-only pointer or the small storage bindings mobile GPUs offer (as the valley).
-  const phone =
-    !params.has("full") &&
-    ((matchMedia("(pointer: coarse)").matches && !matchMedia("(pointer: fine)").matches) || gpu.limits.maxStorageBufferBindingSize < 512 * 1048576);
-  // 50 voxels per metre (2 cm) by default; the HUD's scale button reloads at the other (?vpm=), since
-  // every model is generated for its scale.
-  const VPM = num("vpm", 50) >= 75 ? 100 : 50;
-  const scaleButton = document.getElementById("scale-toggle") as HTMLButtonElement | null;
-  if (scaleButton) {
-    scaleButton.textContent = VPM === 100 ? "Switch to 2 cm" : "Switch to 1 cm";
-    scaleButton.title = `Switch to ${VPM === 100 ? 50 : 100} voxels per metre (reloads the scene)`;
-    scaleButton.onclick = () => {
-      const next = new URLSearchParams(location.search);
-      next.set("vpm", String(VPM === 100 ? 50 : 100));
-      location.search = next.toString();
-    };
-  }
+  const phone = isPhone(gpu, params);
+  // 50 voxels per metre (2 cm) by default, 20 (5 cm) on a phone; the HUD's scale button reloads one
+  // scale finer, or back (?vpm=), since every model is generated for its scale.
+  const VPM = pickScale(params, phone);
+  const title = document.querySelector("#hud .brand small");
+  if (title) title.textContent = `nightwood · ${voxelSize(VPM)} voxels`;
   /** Metres to voxels at this resolution. */
   const m = (metres: number) => metres * VPM;
   const K = VPM / 10;

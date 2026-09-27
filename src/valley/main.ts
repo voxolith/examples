@@ -1,33 +1,42 @@
-// valley — the world page's valley at 50 or 100 voxels per metre, a rat's-eye scale.
+// valley — the world page's valley at 20, 50 or 100 voxels per metre, down to a rat's-eye scale.
 //
 // The same valley as ../world: its terrain, river, village, footpaths and
 // forest come from the same layout (../world/layout.ts), decided in the
-// world page's 10 voxels per metre and multiplied by five or ten here. What
-// changes is the resolution:
-//   - every model is generated at 50 (2 cm voxels, the default) or 100
-//     voxels per metre (1 cm): the generators refine their own design
-//     (single leaves and needles, bark furrows, bricks, tiles and mortar at
-//     real size, rounded rock), as sparse models;
+// world page's 10 voxels per metre and multiplied by two, five or ten here.
+// What changes is the resolution:
+//   - every model is generated at 20 (5 cm voxels, a phone's default), 50
+//     (2 cm, the desktop default) or 100 voxels per metre (1 cm): the
+//     generators refine their own design (single leaves and needles, bark
+//     furrows, bricks, tiles and mortar at real size, rounded rock), as
+//     sparse models;
 //   - models are drawn as instances, once each on the GPU however often they
 //     stand in the valley, at the layout's exact orientations;
 //   - the terrain is refined per brick (a smooth surface, grass blades,
 //     pebbles) and streamed in chunks around the view, since a 128 m valley
 //     of centimetre voxels does not fit in memory at once;
-//   - rats, at their real size, roam the village as an instanced crowd.
+//   - rats roam the village as an instanced crowd, but only at a scale where
+//     they come out at their real size (gen-creature's realSizeAt: 1 cm
+//     voxels, 100 vox/m). At 50 or 20 a rat's legs would be under two voxels
+//     thick at real size, so it would have to be built larger than life
+//     (0.86 m long at 50, 2.15 m at 20); the page leaves them out instead.
 //
 // URL options:
-//   ?vpm=50|100 the voxels per metre (default 50; the HUD's scale button
-//               reloads at the other), ?scale= the valley size as on the
-//               world page (default 4), ?variants= the models per species
-//               (default 3; the world page uses 10, which matches it exactly
-//               but needs over a gigabyte of GPU memory at 100), ?rats= the
-//               crowd (default 60), ?radius= the streamed radius in metres
-//               (default 24), ?seed=, ?season=, ?time=night, ?weather=,
-//               ?rigged (rats posed on the GPU), ?perf, ?full (desktop
-//               settings on a phone).
+//   ?vpm=20|50|100 the voxels per metre (default 50, 20 on a phone; anything
+//               else snaps to the nearest; the HUD's scale button steps
+//               between the default and one scale finer), ?scale= the valley
+//               size as on the world page (default 4), ?variants= the models
+//               per species (default 3; the world page uses 10, which matches
+//               it exactly but needs over a gigabyte of GPU memory at 100),
+//               ?rats= the crowd (default 60 where rats are real size, none
+//               elsewhere; ?rats=N forces a crowd of N at any scale, larger
+//               than life below 100, for testing), ?radius= the streamed
+//               radius in metres (default 24), ?seed=, ?season=, ?time=night,
+//               ?weather=, ?rigged (rats posed on the GPU), ?perf, ?full
+//               (desktop settings on a phone).
 // A phone (a touch-only pointer, or storage bindings under 512 MiB) gets a
-// lighter profile: scale 2, one variant, 20 rats, a 16 m radius and the Low
-// preset; every option above still applies on its own.
+// lighter profile: 20 voxels per metre, scale 2, one variant, 20 rats (at
+// 100 only), a 16 m radius and the Low preset; every option above still
+// applies on its own.
 // Drag the lamp (or double-tap), N for night, W for weather, as on the
 // world page.
 
@@ -61,9 +70,10 @@ import { createInput, makeOrbitController, prepareSurface, recogniseGestures } f
 import { approach, atmosphereFrame, ATMOSPHERES, makeAtmosphereTransition, timeOfDay, type AtmosphereName } from "@voxolith/engine/atmosphere";
 import { refineTerrain } from "@voxolith/gen-terrain";
 import { generateBuilding } from "@voxolith/gen-building";
-import { atScale, generateCreature, PRESETS as RATS } from "@voxolith/gen-creature";
+import { atScale, generateCreature, minVoxelsPerMetre, PRESETS as RATS, realSizeAt } from "@voxolith/gen-creature";
 import { houseParams, HOUSE_KINDS, layoutValley, paletteKey, TILE, valleySites, valleySpecies, valleyTerrain, workerSeed, type Season } from "../world/layout";
 import { boot, runLoop } from "../shared/boot";
+import { isPhone, pickScale, SCALES, voxelSize } from "../shared/scale";
 
 const params = new URLSearchParams(location.search);
 const seed = hashSeed(params.get("seed") ?? "voxolith");
@@ -74,30 +84,18 @@ const app = await boot("valley");
 if (app) {
   const { gpu, canvas, info } = app;
 
-  // A phone gets a lighter valley: a smaller map, one model per species,
-  // fewer rats and the Low preset. Told apart by a touch-only pointer or the
+  // A phone gets a lighter valley: 5 cm voxels, a smaller map, one model per
+  // species and the Low preset. Told apart by a touch-only pointer or the
   // small storage bindings mobile GPUs offer. ?full asks for the desktop
   // settings; every setting below can still be given on its own.
-  const phone =
-    !params.has("full") &&
-    ((matchMedia("(pointer: coarse)").matches && !matchMedia("(pointer: fine)").matches) || gpu.limits.maxStorageBufferBindingSize < 512 * 1048576);
-  // 50 voxels per metre (2 cm) by default everywhere; 100 (1 cm) is still too
-  // heavy for a desktop GPU. The HUD's scale button reloads at the other
-  // (?vpm=), since every model is generated for its scale.
-  /** Voxels per metre here (50 or 100), and the factor over the world page's 10. */
-  const VPM = num("vpm", 50) >= 75 ? 100 : 50;
-  const scaleButton = document.getElementById("scale-toggle") as HTMLButtonElement | null;
-  if (scaleButton) {
-    scaleButton.textContent = VPM === 100 ? "Switch to 2 cm" : "Switch to 1 cm";
-    scaleButton.title = `Switch to ${VPM === 100 ? 50 : 100} voxels per metre (reloads the scene)`;
-    scaleButton.onclick = () => {
-      const next = new URLSearchParams(location.search);
-      next.set("vpm", String(VPM === 100 ? 50 : 100));
-      location.search = next.toString();
-    };
-  }
+  const phone = isPhone(gpu, params);
+  // 50 voxels per metre (2 cm) by default, 20 (5 cm) on a phone; 100 (1 cm)
+  // is still too heavy for a desktop GPU. The HUD's scale button reloads one
+  // scale finer, or back (?vpm=), since every model is generated for its scale.
+  /** Voxels per metre here (20, 50 or 100), and the factor over the world page's 10. */
+  const VPM = pickScale(params, phone);
   const title = document.querySelector("#hud .brand small");
-  if (title) title.textContent = `valley · ${100 / VPM} cm voxels`;
+  if (title) title.textContent = `valley · ${voxelSize(VPM)} voxels`;
   const K = VPM / 10;
   /** Lengths below are written for 1 cm voxels; this scales them to VPM. */
   const cm = VPM / 100;
@@ -105,7 +103,14 @@ if (app) {
   const COARSE = { x: TILE * SPAN, y: 192, z: TILE * SPAN };
   const SIZE = { x: COARSE.x * K, y: COARSE.y * K, z: COARSE.z * K };
   const VARIANTS = Math.max(1, Math.min(10, num("variants", phone ? 1 : 3)));
-  const RAT_COUNT = Math.max(0, Math.min(400, num("rats", phone ? 20 : 60)));
+  // Rats only where every variant comes out at its real size (100 vox/m of
+  // the three), unless ?rats= asks for them anyway.
+  const RAT_KINDS = ["rat", "grey rat", "lab rat", "black rat"];
+  const ratsReal = RAT_KINDS.every((k) => realSizeAt(RATS[k], VPM));
+  const RAT_COUNT = Math.max(0, Math.min(400, num("rats", ratsReal ? (phone ? 20 : 60) : 0)));
+  /** The HUD's note when rats were left out: the coarsest scale at which they are real size. */
+  const ratScale = SCALES.find((s) => RAT_KINDS.every((k) => s >= minVoxelsPerMetre(RATS[k])));
+  const ratsNote = !RAT_COUNT && !params.has("rats") && ratScale ? `rats at ${voxelSize(ratScale)}` : `${RAT_COUNT} rats`;
   /** Streamed radius, in voxels (given in metres). */
   const RADIUS = Math.max(8, num("radius", phone ? 16 : 24)) * VPM;
 
@@ -160,7 +165,7 @@ if (app) {
     for (const sp of species) { fine.set(sp.key, out.slice(i, i + sp.count)); i += sp.count; }
     console.log(`[valley] ${out.length} models in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
   }
-  const rats = ["rat", "grey rat", "lab rat", "black rat"].map((k, i) => generateCreature(atScale(RATS[k], VPM), seededRandom(seed + i * 97), k).entity);
+  const rats = RAT_COUNT ? RAT_KINDS.map((k, i) => generateCreature(atScale(RATS[k], VPM), seededRandom(seed + i * 97), k).entity) : [];
 
   // --- renderer ---------------------------------------------------------------------
   const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() });
@@ -246,7 +251,7 @@ if (app) {
   // --- rats ---------------------------------------------------------------------------------
   interface Rat extends CrowdMember { speed: number; turn: number; timer: number; }
   // ?rigged poses the rats on the GPU from one rest model per variant instead of baking poses.
-  const crowd = makeCrowd({ instances: layer, rigged: params.has("rigged"), near: 3000 * cm, farFps: 6, freeze: 12000 * cm, budgetMs: 4 });
+  const crowd = RAT_COUNT === 0 ? null : makeCrowd({ instances: layer, rigged: params.has("rigged"), near: 3000 * cm, farFps: 6, freeze: 12000 * cm, budgetMs: 4 });
   const rng = seededRandom(seed ^ 0x51ed);
   const [vx, vz] = [sites.VC[0] * K, sites.VC[1] * K];
   const members: Rat[] = [];
@@ -256,7 +261,9 @@ if (app) {
     anim.update(rng() * 3);
     let x = 0, z = 0;
     for (let t = 0; t < 50; t++) {
-      x = vx + (rng() - 0.5) * 3000 * cm; z = vz + (rng() - 0.5) * 3000 * cm;
+      // Inside the valley too: at ?scale=1 the 30 m square overhangs its edge.
+      x = Math.max(60 * cm, Math.min(SIZE.x - 60 * cm, vx + (rng() - 0.5) * 3000 * cm));
+      z = Math.max(60 * cm, Math.min(SIZE.z - 60 * cm, vz + (rng() - 0.5) * 3000 * cm));
       if (!ground.waterAt(x, z) && !valley.inHouse(Math.floor(x / K), Math.floor(z / K), 2)) break;
     }
     members.push({ id: i + 1, entity: rats[k], variant: `rat${k}`, anim, base: ratBase[k], x, y: 0, z, yaw: rng() * Math.PI * 2, speed: 40, turn: 0, timer: rng() * 4 });
@@ -344,7 +351,7 @@ if (app) {
     stream();
     for (const r of members) think(r, step);
     const f = frame();
-    if (members.length) crowd.update(members, f.camPos as [number, number, number]);
+    if (crowd) crowd.update(members, f.camPos as [number, number, number]);
     else layer.commit();
     perf.frame(now);
     gpu.renderScale = perf.scale();
@@ -459,9 +466,9 @@ if (app) {
   const report = () => {
     const now = performance.now(), secs = (now - acc.t) / 1000, st = renderer.instanceStats();
     info.textContent =
-      `${VPM} voxels/m${phone ? " (phone settings; ?full for all)" : ""} · ${valley.houses.length} houses, ${trees} trees, ${rocks} rocks, ${plants} plants, ${members.length} rats · ` +
+      `${VPM} voxels/m${phone ? " (phone settings; ?full for all)" : ""} · ${valley.houses.length} houses, ${trees} trees, ${rocks} rocks, ${plants} plants, ${ratsNote} · ` +
       `${st.instances} instances of ${st.models} models · ${world.resident} chunks${world.pending ? ` (+${world.pending})` : ""} · ` +
-      `${(st.bytes / 1048576).toFixed(0)} MB on the GPU · ${(acc.frames / secs).toFixed(0)} fps · drag the lamp · N night/day · W weather`;
+      `${(st.bytes / 1048576).toFixed(0)} MB on the GPU · ${secs > 0.1 ? (acc.frames / secs).toFixed(0) : "–"} fps · drag the lamp · N night/day · W weather`;
     acc.frames = 0; acc.t = now;
   };
   const countFrames = () => { acc.frames++; requestAnimationFrame(countFrames); };
