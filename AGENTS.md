@@ -20,18 +20,34 @@ Siblings needed: renderer, engine, generators.
 
 ## Map
 
-- `src/shared/boot.ts`: `boot(name)` (device, canvas, HUD, software warning, and the page's
-  load tracker `load` with its loading screen `screen`) and `runLoop`. Every page reports its
-  load into `load` (`trackRenderer`, the pool, layer and chunked world, app phases) and calls
-  `screen.ready()` once it has drawn; minecraft-region passes `{ loading: false }` and opens a
-  screen per dropped file.
-- `src/shared/loading-screen.ts`: `showLoadingScreen`: the full-canvas overlay until
-  `ready()`, then a corner pill while phases still stream; `fail(err)` shows an error. Its
-  words are in `src/shared/loading-labels.ts` (`PHASE_LABELS`, `PAGE_BLURBS`): add a label
-  there for a new phase. No `visibility` in its CSS (the smoke hides overlays with it).
+- `src/shared/boot.ts`: `boot(name, { blurb, steps })` (device, canvas, HUD, software warning,
+  and the page's load tracker `load` with its loading screen `screen`) and `runLoop`. Every page
+  reports its load into `load` (`trackRenderer`, the pool, layer and chunked world, app phases)
+  and calls `screen.ready()` once it has drawn; minecraft-region passes `{ loading: false }` and
+  opens a screen per dropped file.
+- `src/shared/loading-screen.ts`: `showLoadingScreen(load, { title, blurb, steps })`: the
+  full-canvas overlay until `ready()`, then a corner pill while listed steps still stream;
+  `fail(err)` shows an error. **Each page lists its own steps** in its `main.ts` (`{ phase,
+  label, background? }`, in the order shown; `STEPS` holds the shared phases' defaults): to
+  show a new phase, add an entry there; unlisted phases stay off the screen but on the tracker.
+  `background: true` steps don't count towards the overall bar and go to the pill after
+  `ready()`. `screen.setSteps` changes the list when it depends on the GPU (valley's rats). No
+  `visibility` in its CSS (the smoke hides overlays with it).
 - `src/shared/loading.ts`: `nextFrame` (resolves after the paint), `step(load, phase, fn)`
-  (an app phase shown a frame before a blocking step), and `reportLoadTimeline`
+  (an app phase shown a frame before a blocking step), `prepared(renderer.prepare(...))` (awaits
+  the pipeline compile; a failed one is left to the first frame), and `reportLoadTimeline`
   (`window.loadTimeline`; under `?perf` the timeline in the console).
+- **Pipelines:** every page creates its renderer with `deferPipelines: true` and awaits
+  `prepared(renderer.prepare(needs))` before its first frame, so the `pipelines` step is the real
+  compile. Pass `instances` / `parts` explicitly when the instances are not placed yet (the
+  defaults read the current state); world gates its loop until the compile is done, since its
+  loop starts before the models are generated.
+- `src/shared/placement.ts` + `placement.worker.ts`: the page's placement worker
+  (`placementWorker()`) and `commitStatic(layer)` (`layer.commitAsync()`, falling back to a
+  synchronous `commit()`). valley, nightwood and instances bake their static scenery there; the
+  upload in `setStatic` stays on the main thread, behind `step(load, STEPS.upload.phase, ...)` so
+  its row is painted first. The bench keeps the synchronous `commit()`, so its `loadMs.place`
+  stays the renderer's own placement cost.
 - `src/shared/scale.ts`: the voxel scale of `valley` and `nightwood`: `isPhone` (the phone
   profile test), `pickScale` (`?vpm=` snapped to 20, 50 or 100; default 50, 20 on a phone; the
   HUD's scale button steps between the default and one scale finer).

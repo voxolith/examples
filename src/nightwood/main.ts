@@ -36,18 +36,33 @@ import { PRESETS as BUSHES } from "@voxolith/gen-bush";
 import { PRESETS as GRASSES } from "@voxolith/gen-grass";
 import { PRESETS as BUILDINGS } from "@voxolith/gen-building";
 import { boot, runLoop } from "../shared/boot";
-import { nextFrame, reportLoadTimeline } from "../shared/loading";
+import { nextFrame, prepared, reportLoadTimeline, step } from "../shared/loading";
+import { commitStatic, placementWorker } from "../shared/placement";
+import { STEPS } from "../shared/loading-screen";
 import { isPhone, pickScale, voxelSize } from "../shared/scale";
 
 const params = new URLSearchParams(location.search);
 const seed = hashSeed(params.get("seed") ?? "nightwood");
 const num = (key: string, fallback: number) => (params.has(key) ? Number(params.get(key)) : fallback);
 
-const app = await boot("nightwood");
+// The loading screen's rows, in this order (phases not listed are not shown, but stay on the
+// tracker for window.loadTimeline and ?perf).
+const app = await boot("nightwood", {
+  blurb: "A forest clearing at night",
+  steps: [
+    STEPS.device,
+    STEPS.models,
+    STEPS.shaders,
+    STEPS.pipelines,
+    STEPS.upload,
+    STEPS.placement,
+    STEPS.ground,
+  ],
+});
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
-  // One tracker for the whole load (boot's: workers, renderer, instance layer, ground, and the
-  // page's own "wood" phase); the loading screen shows it until the clearing is up.
+  // One tracker for the whole load (boot's: workers, renderer, instance layer, ground); the
+  // loading screen shows it until the clearing is up.
   // A phone: touch-only pointer or the small storage bindings mobile GPUs offer (as the valley).
   const phone = isPhone(gpu, params);
   // 50 voxels per metre (2 cm) by default, 20 (5 cm) on a phone; the HUD's scale button reloads one
@@ -116,33 +131,35 @@ if (app) {
     const out = await workers.generateMany(
       all.map((k) => ({ generator: k.generator, params: k.params, seed: k.seed, entityId: k.key, ctx: { voxelsPerMetre: VPM } })),
     );
-    workers.destroy();
+    // Not awaited: it only lets the workers finish their cache writes.
+    void workers.destroy();
     all.forEach((k, i) => fine.set(k.key, out[i]));
   }
 
   // --- renderer ------------------------------------------------------------------------------------
   const palette = new PaletteAllocator(1);
   const { base: groundBase } = palette.allocate(terrain.roles, "terrain");
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load) });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   const quality = gpu.software ? "low" : phone ? "medium" : "high";
   // The view distance bounds every primary ray (about 1.7 steps per voxel of it at worst).
   renderer.setQuality({ ...QUALITY_PRESETS[quality], maxSteps: gpu.software ? 768 : 1024, shadowSteps: quality === "low" ? 0 : 128 });
   if (gpu.software) gpu.renderScale = Math.min(gpu.renderScale, 0.3);
   else if (phone) gpu.renderScale = Math.min(gpu.renderScale, 0.6);
+  // deferPipelines above: compile what the frames use (instances: the wood is not placed yet)
+  // while the wood is placed and the ground built, and await it before the first frame.
+  const compiled = prepared(renderer.prepare({ instances: true }));
 
   const ground = refineTerrain(terrain, K, { seed });
   const floor = (x: number, z: number) => ground.heightAt(Math.max(0, Math.min(SIZE.x - 1, x)), Math.max(0, Math.min(SIZE.z - 1, z)));
-  const layer = makeInstanceLayer(renderer, { load });
+  // The wood's static set is baked on a worker (commitAsync below), so the page keeps painting.
+  const placement = placementWorker();
+  const layer = makeInstanceLayer(renderer, { load, placement });
   // A darker, cooler night skin for the foliage: the moon does not show greens as the sun does.
   const night = (c: RGB): RGB => [c[0] * 0.8, c[1] * 0.85, c[2] * 0.95];
   const baseOf = (key: string) => layer.palettes.of(key, fine.get(key)!.model.roles, key === "house" ? undefined : night);
 
   // --- the wood ----------------------------------------------------------------------------------
-  // Placing the wood, uploading its models (the engine's "upload") and indexing the instances
-  // ("placement") block for a while, so an app phase around all three is shown a frame first.
-  const wood = load.task("wood");
-  await nextFrame();
   const rng = seededRandom(seed ^ 0x77);
   const statics: { model: Entity["model"]; x: number; y: number; z: number; yaw: number; base: number }[] = [];
   const place = (key: string, x: number, z: number) => {
@@ -185,9 +202,11 @@ if (app) {
   // The cottage, its front towards the clearing.
   const house = fine.get("house")!;
   statics.push({ model: house.model, x: Math.round(H[0]), y: floor(H[0], H[1]) + 1, z: Math.round(H[1]), yaw: HOUSE_DIR + Math.PI, base: baseOf("house") });
-  layer.setStatic(statics);
-  layer.commit();
-  wood.end();
+  // Uploading the models (the engine's "upload") blocks the main thread, so its row is opened and
+  // painted first. Indexing the instances ("placement") runs on the worker while the ground is
+  // built below; the first frame waits for both.
+  await step(load, STEPS.upload.phase, () => layer.setStatic(statics));
+  const placed = commitStatic(layer).finally(() => placement.destroy());
 
   // --- the ground, around the clearing as far as the fog reaches -------------------------------
   const CHUNK = 256;
@@ -213,6 +232,7 @@ if (app) {
     world.step(40);
     await nextFrame();
   }
+  await Promise.all([placed, compiled]);
 
   // --- lights --------------------------------------------------------------------------------------
   // The lantern by the cottage door, and the fireflies: each a small, unshadowed light with a halo,

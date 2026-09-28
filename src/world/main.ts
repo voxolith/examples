@@ -50,7 +50,8 @@ import {
 } from "@voxolith/engine/atmosphere";
 import { layoutValley, paletteKey, TILE, valleySites, valleySpecies, valleyTerrain, workerSeed, type Season, type Species } from "./layout";
 import { boot, runLoop } from "../shared/boot";
-import { nextFrame, reportLoadTimeline, step } from "../shared/loading";
+import { nextFrame, prepared, reportLoadTimeline, step } from "../shared/loading";
+import { STEPS } from "../shared/loading-screen";
 
 // One tile is 320 voxels square; `scale` lays out SPANxSPAN of them.
 const params = new URLSearchParams(location.search);
@@ -61,7 +62,20 @@ const seed = hashSeed(params.get("seed") ?? "voxolith");
 const season = (params.get("season") ?? "summer") as Season;
 const still = params.has("still");
 
-const app = await boot("world");
+// The loading screen's rows, in this order (phases not listed are not shown, but stay on the
+// tracker for window.loadTimeline and ?perf).
+const app = await boot("world", {
+  blurb: "A generated valley at 10 voxels per metre",
+  steps: [
+    STEPS.device,
+    { phase: "terrain", label: "Shaping the terrain" },
+    STEPS.shaders,
+    STEPS.pipelines,
+    STEPS.models,
+    { phase: "layout", label: "Laying out the valley" },
+    STEPS.ground,
+  ],
+});
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
   // One tracker for the whole load (boot's): the renderer, the generator workers and the chunked
@@ -91,7 +105,7 @@ if (app) {
   const { base: s0 } = palette.allocate(settlement, "settlement");
   const PATH = s0, PATH2 = s0 + 1, YARD = s0 + 2;
 
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load) });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true });
   // ?selftest: bands showing which stage of the voxel lookup works on this GPU.
   { const st = new URLSearchParams(location.search).get("selftest"); if (st !== null) renderer.setDebug(st === "3" ? 9 : st === "2" ? 8 : 7); }
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
@@ -100,6 +114,11 @@ if (app) {
     ...QUALITY_PRESETS[quality],
     maxSteps: Math.min(4096, QUALITY_PRESETS[quality].maxSteps * SPAN),
   });
+  // deferPipelines above: the pipelines compile now, while the models generate (this page stamps
+  // everything into the world, so no instance variants), and the loop draws nothing until they
+  // are ready: a frame before that would compile them synchronously.
+  let compiledYet = false;
+  const compiled = prepared(renderer.prepare({ instances: false })).then(() => { compiledYet = true; });
 
   // --- camera and loop -----------------------------------------------------------
   const far = 430 * SPAN;
@@ -164,6 +183,7 @@ if (app) {
   let streamWorld: (() => void) | null = null;
   const wantContinuous = () => !still || spin || phase < phaseTarget || settling();
   const loop = runLoop((now, dt) => {
+    if (!compiledYet) return;
     streamWorld?.();
     perf.frame(now);
     gpu.renderScale = perf.scale();
@@ -220,7 +240,8 @@ if (app) {
       } catch (err) {
         console.warn("[world] worker generation failed, falling back to the main thread:", err);
       } finally {
-        workers.destroy();
+        // Not awaited: it only lets the workers finish their cache writes.
+        void workers.destroy();
       }
     }
     // The fallback reports into the same phase, though it blocks until it is done.
@@ -445,6 +466,7 @@ if (app) {
   const RADIUS = Number(params.get("radius") ?? SIZE.x * 1.5);
   const tgt = () => orbit.target();
   world.focus(tgt()[0], tgt()[2], RADIUS);
+  await compiled;
   while (world.pending) {
     world.step(12);
     loop.invalidate();

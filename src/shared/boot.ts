@@ -1,8 +1,9 @@
 // Shared startup: grab the canvas, init WebGPU, and show the engine's
 // "unsupported" card instead of a blank page when navigator.gpu is missing.
 // It also starts the page's load tracker and loading screen, so every page
-// shows its load the same way: the page reports into `load` and calls
-// `screen.ready()` once it has drawn.
+// shows its load the same way: the page lists the steps to show
+// (`boot(name, { steps })`), reports into `load` and calls `screen.ready()`
+// once it has drawn.
 
 import {
   initGpu,
@@ -14,7 +15,7 @@ import {
 } from "@voxolith/renderer";
 import { makeLoadTracker, type LoadTracker } from "@voxolith/engine";
 import "./styles.css";
-import { NO_SCREEN, showLoadingScreen, type LoadingScreen } from "./loading-screen";
+import { NO_SCREEN, showLoadingScreen, type LoadingScreen, type LoadingStep } from "./loading-screen";
 import { initTheme } from "../brand/theme";
 
 const MARK = `<img src="${import.meta.env.BASE_URL}brand/logo-mark.svg" alt="" width="72" height="72">`;
@@ -29,16 +30,29 @@ export interface Booted {
   screen: LoadingScreen;
 }
 
-/** Options for {@link boot}. */
-export interface BootOptions {
-  /**
-   * Show the loading screen from the start (default true). A page that waits for the user first
-   * (minecraft-region) passes false and opens a screen of its own when its load starts.
-   */
-  loading?: boolean;
-}
+/**
+ * Options for {@link boot}: the page's loading screen, as a line under its title and the steps
+ * it shows (see `LoadingScreenOptions`). `STEPS.device` is the phase `boot` itself reports while
+ * it starts WebGPU. A page that waits for the user first (minecraft-region) passes
+ * `{ loading: false }` instead, and opens a screen of its own when its load starts.
+ */
+export type BootOptions =
+  | { loading?: true; blurb?: string; steps: readonly LoadingStep[] }
+  | { loading: false };
 
-export async function boot(appName: string, opts: BootOptions = {}): Promise<Booted | null> {
+/**
+ * Start a page: theme, canvas, WebGPU, and its load tracker and loading screen. Resolves with
+ * `null` after showing the "unsupported" card when there is no WebGPU.
+ *
+ * @example
+ * ```ts
+ * const app = await boot("creature", {
+ *   blurb: "Rigged, animated rats",
+ *   steps: [STEPS.device, { phase: "terrain", label: "Shaping the terrain" }, STEPS.shaders],
+ * });
+ * ```
+ */
+export async function boot(appName: string, opts: BootOptions): Promise<Booted | null> {
   const canvas = document.getElementById("scene") as HTMLCanvasElement | null;
   const info = document.getElementById("info");
   if (!canvas || !info) throw new Error("Missing #scene / #info");
@@ -46,7 +60,7 @@ export async function boot(appName: string, opts: BootOptions = {}): Promise<Boo
   // On a phone the info is one line; a tap shows the rest.
   info.addEventListener("click", () => info.classList.toggle("open"));
   const load = makeLoadTracker();
-  const screen = opts.loading === false ? NO_SCREEN : showLoadingScreen(load, { title: appName });
+  const screen = opts.loading === false ? NO_SCREEN : showLoadingScreen(load, { title: appName, blurb: opts.blurb, steps: opts.steps });
   const device = load.task("device");
   try {
     const gpu = await initGpu(canvas);

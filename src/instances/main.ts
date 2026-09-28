@@ -19,7 +19,9 @@ import { generateTerrain } from "@voxolith/gen-terrain";
 import { generateTree, PRESETS as TREES } from "@voxolith/gen-tree";
 import { generateCreature, PRESETS as RATS } from "@voxolith/gen-creature";
 import { boot, runLoop } from "../shared/boot";
-import { reportLoadTimeline, step } from "../shared/loading";
+import { prepared, reportLoadTimeline, step } from "../shared/loading";
+import { commitStatic, placementWorker } from "../shared/placement";
+import { STEPS } from "../shared/loading-screen";
 
 const params = new URLSearchParams(location.search);
 const TREE_COUNT = Math.max(0, Math.min(2000, Number(params.get("trees") ?? 160)));
@@ -28,7 +30,22 @@ const STAMP = params.has("stamp");
 const SIZE = { x: 896, y: 176, z: 896 };
 const seed = hashSeed(params.get("seed") ?? "instances");
 
-const app = await boot("instances");
+// The loading screen's rows, in this order (phases not listed are not shown, but stay on the
+// tracker for window.loadTimeline and ?perf).
+const app = await boot("instances", {
+  blurb: "Scenery and a crowd drawn by reference",
+  steps: [
+    STEPS.device,
+    { phase: "terrain", label: "Shaping the terrain" },
+    { phase: "trees", label: "Growing trees" },
+    { phase: "creatures", label: "Generating rats" },
+    STEPS.shaders,
+    STEPS.pipelines,
+    STEPS.ground,
+    // ?stamp writes the trees into the world instead of placing them.
+    ...(STAMP ? [{ phase: "stamp", label: "Stamping the trees" }] : [STEPS.upload, STEPS.placement]),
+  ],
+});
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
   const rng = seededRandom(seed);
@@ -51,13 +68,18 @@ if (app) {
   const rats: Entity[] = await step(load, "creatures", () => KINDS.map((k, i) => generateCreature(RATS[k], seededRandom(seed + i * 97), k).entity));
   const ratBase = rats.map((e, i) => palette.allocate(e.model.roles, KINDS[i]).base);
 
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load) });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   renderer.setQuality(gpu.software ? "low" : "medium");
+  // deferPipelines above: compile the pipelines the frames will use (instances: none is placed
+  // yet) while the ground and the trees go in, and await them before the first frame.
+  const compiled = prepared(renderer.prepare({ instances: !STAMP || RAT_COUNT > 0 }));
   await step(load, "ground", () => renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: terrain.maxY(), z1: SIZE.z - 1 }, (cells, ox, oy, oz) => terrain.fillBrick(cells, ox, oy, oz, groundBase)));
   const ground = (x: number, z: number) => terrain.heightAt(Math.max(0, Math.min(SIZE.x - 1, Math.round(x))), Math.max(0, Math.min(SIZE.z - 1, Math.round(z))));
 
-  const layer = makeInstanceLayer(renderer, { load });
+  // The trees' static set is baked on a worker (commitAsync below), so the page keeps painting.
+  const placement = STAMP ? undefined : placementWorker();
+  const layer = makeInstanceLayer(renderer, { load, placement });
   // Trees on dry ground, spaced, at any heading.
   const placed: { x: number; z: number }[] = [];
   const statics: (EntityPlacement & { yaw: number })[] = [];
@@ -68,15 +90,21 @@ if (app) {
     const t = trees[Math.floor(rng() * trees.length)];
     statics.push({ model: t.entity.model, x: Math.round(x), y: ground(x, z) + 1, z: Math.round(z), yaw: rng() * Math.PI * 2, base: t.base });
   }
-  // Stamping or indexing them blocks for a moment: an app phase, shown a frame first.
-  await step(load, "scenery", () => {
-    if (STAMP) {
-      // The old way, for comparison: every tree written into the world, turned in 90° steps.
+  if (STAMP) {
+    // The old way, for comparison: every tree written into the world, turned in 90° steps. It
+    // blocks for a moment: an app phase, shown a frame first.
+    await step(load, "stamp", () => {
       for (const s of statics) {
         blitModelToBricks(renderer, s.model, { x: s.x, y: s.y, z: s.z }, s.base, Math.floor((s.yaw / (Math.PI / 2)) % 4) as Orientation);
       }
-    } else layer.setStatic(statics);
-  });
+    });
+  } else {
+    // Uploading the models (the engine's "upload") blocks, so its row is painted first; indexing
+    // the instances ("placement") runs on the worker.
+    await step(load, STEPS.upload.phase, () => layer.setStatic(statics));
+    await commitStatic(layer);
+  }
+  placement?.destroy();
 
   // Rats wander between the trees.
   interface Rat extends CrowdMember { speed: number; turn: number; timer: number; }
@@ -123,6 +151,7 @@ if (app) {
   const sky = atmosphereFrame(timeOfDay(0.42), ATMOSPHERES.clear);
   let last = performance.now();
   const acc = { frames: 0, ms: 0, t: performance.now() };
+  await compiled;
   const loop = runLoop((now) => {
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;

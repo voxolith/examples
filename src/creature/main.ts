@@ -46,7 +46,8 @@ import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosp
 import { generateTerrain } from "@voxolith/gen-terrain";
 import { generateCreature, PRESETS, ROLE } from "@voxolith/gen-creature";
 import { boot, runLoop } from "../shared/boot";
-import { reportLoadTimeline, step } from "../shared/loading";
+import { prepared, reportLoadTimeline, step } from "../shared/loading";
+import { STEPS } from "../shared/loading-screen";
 
 const params = new URLSearchParams(location.search);
 const COUNT = Math.max(1, Math.min(40, Number(params.get("count") ?? 8)));
@@ -55,7 +56,19 @@ const seed = hashSeed(params.get("seed") ?? "rats");
 const FPS = 12;
 const YAWS = 16;
 
-const app = await boot("creature");
+// The loading screen's rows, in this order (phases not listed are not shown, but stay on the
+// tracker for window.loadTimeline and ?perf).
+const app = await boot("creature", {
+  blurb: "Rigged, animated rats",
+  steps: [
+    STEPS.device,
+    { phase: "terrain", label: "Shaping the terrain" },
+    { phase: "creatures", label: "Generating rats" },
+    STEPS.shaders,
+    STEPS.pipelines,
+    STEPS.ground,
+  ],
+});
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
   const rng = seededRandom(seed);
@@ -70,9 +83,12 @@ if (app) {
   const variants = await step(load, "creatures", () => KINDS.map((k, i) => generateCreature(PRESETS[k], seededRandom(seed + i * 101), k).entity));
   const bases = variants.map((e, i) => palette.allocate(e.model.roles, `creature:${KINDS[i]}`).base);
 
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load) });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   renderer.setQuality(gpu.software ? "low" : "medium");
+  // deferPipelines above: compile while the ground goes in (the rats are stamped, so no instance
+  // variants), and await it before the first frame.
+  const compiled = prepared(renderer.prepare({ instances: false }));
   const maxY = terrain.maxY();
   await step(load, "ground", () => renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: maxY, z1: SIZE.z - 1 }, (cells, ox, oy, oz) => terrain.fillBrick(cells, ox, oy, oz, groundBase)));
   const groundAt = (x: number, z: number) => terrain.heightAt(Math.max(0, Math.min(SIZE.x - 1, Math.round(x))), Math.max(0, Math.min(SIZE.z - 1, Math.round(z))));
@@ -290,6 +306,7 @@ if (app) {
   const perf = makePerf({ enabled: params.has("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.4, retryAfterMs: Infinity });
   const sky = atmosphereFrame(timeOfDay(0.42), ATMOSPHERES.clear);
   let last = performance.now(), stats = { bricks: 0, voxels: 0 };
+  await compiled;
   const loop = runLoop((now) => {
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;

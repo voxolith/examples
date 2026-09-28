@@ -24,7 +24,8 @@ import { createInput, makeOrbitController, prepareSurface } from "@voxolith/engi
 import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
 import { atScale, generateCreature, PRESETS } from "@voxolith/gen-creature";
 import { boot, runLoop } from "../shared/boot";
-import { reportLoadTimeline, step } from "../shared/loading";
+import { prepared, reportLoadTimeline, step } from "../shared/loading";
+import { STEPS } from "../shared/loading-screen";
 
 const params = new URLSearchParams(location.search);
 const vpm = Number(params.get("vpm") ?? 10);
@@ -33,7 +34,17 @@ const distance = Number(params.get("distance") ?? 230);
 const PAIR = 64, GAP = 30;
 const SIZE = { x: 480, y: 48, z: 150 };
 
-const app = await boot("rigged");
+// The loading screen's rows, in this order (phases not listed are not shown, but stay on the
+// tracker for window.loadTimeline and ?perf).
+const app = await boot("rigged", {
+  blurb: "Baked and GPU-posed rats, side by side",
+  steps: [
+    STEPS.device,
+    { phase: "creatures", label: "Generating rats" },
+    STEPS.shaders,
+    STEPS.pipelines,
+  ],
+});
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
   const rat = await step(load, "creatures", () => generateCreature(vpm > 10 ? atScale(PRESETS.rat, vpm) : PRESETS.rat, seededRandom(11), "rat").entity);
@@ -49,7 +60,7 @@ if (app) {
     "ground",
   );
   const ratBase = palette.allocate(rat.model.roles, "rat").base;
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load) });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   renderer.setQuality(gpu.software ? "low" : "high");
   renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: 3, z1: SIZE.z - 1 }, (cells, ox, oy) => {
@@ -84,6 +95,9 @@ if (app) {
   const sky = atmosphereFrame(timeOfDay(0.42), ATMOSPHERES.clear);
   info.textContent = `each pair: baked on the CPU (left, green) · posed on the GPU (right, blue) · ${clips.join(", ")}`;
 
+  // deferPipelines above: compile instances, posed or not (the right-hand rats are posed on the
+  // GPU), before the first frame.
+  await prepared(renderer.prepare({ instances: true, parts: true }));
   let last = performance.now();
   const loop = runLoop((now) => {
     const dt = Math.min(0.05, (now - last) / 1000);

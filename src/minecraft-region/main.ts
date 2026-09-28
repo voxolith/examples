@@ -7,9 +7,8 @@ import { createRenderer, OccupancyGrid, buildMinecraftRegion, firstPersonFrame, 
 import { axis, button, createInput, makeActions, makeLookController, makeTouchControls, prepareSurface } from "@voxolith/engine/input";
 import { makeLoadTracker, trackRenderer } from "@voxolith/engine";
 import { boot, runLoop } from "../shared/boot";
-import { reportLoadTimeline, step } from "../shared/loading";
-import { NO_SCREEN, showLoadingScreen } from "../shared/loading-screen";
-import { PAGE_BLURBS } from "../shared/loading-labels";
+import { prepared, reportLoadTimeline, step } from "../shared/loading";
+import { NO_SCREEN, showLoadingScreen, STEPS } from "../shared/loading-screen";
 import { DAYLIGHT } from "../shared/env";
 
 // Nothing loads until a file is dropped, so no loading screen at the start: each drop opens one.
@@ -46,7 +45,16 @@ if (app) {
     // A tracker and a loading screen per file: the file name as the title.
     screen.dispose();
     const tracker = makeLoadTracker();
-    screen = showLoadingScreen(tracker, { title: name, blurb: PAGE_BLURBS["minecraft-region"] });
+    // The rows, in this order (phases not listed stay on the tracker for window.loadTimeline).
+    screen = showLoadingScreen(tracker, {
+      title: name,
+      blurb: "A Minecraft region, first person",
+      steps: [
+        { phase: "region", label: "Reading the region file" },
+        STEPS.shaders,
+        STEPS.pipelines,
+      ],
+    });
     try {
       // A 256×256 block crop from the middle of the region, every 2nd block.
       const scene = await step(tracker, "region", () => buildMinecraftRegion(new Uint8Array(buf), {
@@ -54,8 +62,10 @@ if (app) {
       }));
       const r = await createRenderer(gpu, {
         size: scene.size, data: scene.data, palette: scene.palette, materials: scene.materials,
-      }, { onLoad: trackRenderer(tracker) });
+      }, { onLoad: trackRenderer(tracker), deferPipelines: true });
       r.updateCoarse(new OccupancyGrid(scene.size, scene.data).data);
+      // deferPipelines: compile before the loop draws it.
+      await prepared(r.prepare());
       renderer = r;
       eye[0] = scene.size.x / 2; eye[1] = scene.size.y * 0.8; eye[2] = -10;
       look.set(0, -15);

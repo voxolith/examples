@@ -2,16 +2,20 @@
 //
 // The engine reports what is loading (`makeLoadTracker`: the renderer through `trackRenderer`,
 // the generator pool, the instance layer, the chunked world and each page's own phases) and
-// draws nothing. This file draws it in two stages:
+// draws nothing. The page says what to show: a list of steps, each naming a tracker phase and
+// the words for it, declared next to the page's loading code (`boot(name, { steps })` in its
+// main.ts). Phases the list does not name are not shown, but stay on the tracker for
+// `window.loadTimeline` and `?perf`. This file draws the list in two stages:
 //
-//   1. Until the page's first picture, a full-canvas overlay: the page title, one row per phase
-//      in the order it started (its words from ./loading-labels.ts, a thin bar and `done/total`
-//      for a counted phase, a sliding bar for an uncounted one, `n cached`), finished rows dimmed
-//      with a tick, and an overall bar. It fades in only after SHOW_AFTER_MS, so a page that is
-//      up sooner never shows it at all.
+//   1. Until the page's first picture, a full-canvas overlay: the page title, one row per step in
+//      the listed order (pending ones dimmed with no bar, a thin bar and `done/total` for a
+//      counted phase, a sliding bar for an uncounted one, `n cached`, finished rows dimmed with a
+//      tick; a background step says it continues in the background), and an overall bar over the
+//      foreground steps. It fades in only after SHOW_AFTER_MS, so a page that is up sooner never
+//      shows it at all.
 //   2. From `ready()` on, the overlay fades out (and stops taking input at once) and a small pill
-//      in the corner lists whatever is still busy (`Building the ground 30/120`), for streamed
-//      phases; the pill goes when the tracker is idle.
+//      in the corner lists whatever listed step is still busy (`Building the ground 30/120`), for
+//      streamed phases; the pill goes when they are idle.
 //
 // Events arrive synchronously, and a phase that blocks the main thread (an upload, the static
 // placement, a pipeline compile) only reaches the screen once it has finished. The pages open an
@@ -23,8 +27,7 @@
 // nothing here sets `visibility` (children inherit the hidden state), and the overlay is removed
 // from the page once it has faded.
 
-import type { LoadTracker, PhaseState } from "@voxolith/engine";
-import { PAGE_BLURBS, phaseLabel } from "./loading-labels";
+import { LOAD_PHASES, type LoadTracker, type PhaseState } from "@voxolith/engine";
 
 /** Milliseconds before the overlay starts to fade in, so a quick load never flashes it. */
 export const SHOW_AFTER_MS = 150;
@@ -33,12 +36,52 @@ const PILL_AFTER_MS = 150;
 /** The fade-out, in ms (matches `.loading.leaving` in styles.css). */
 const FADE_MS = 250;
 
+/** One row of the loading screen: a phase of the page's tracker, and what to call it. */
+export interface LoadingStep {
+  /** The tracker phase the row reads: one of the engine's (`LOAD_PHASES`), `device`, or the page's own. */
+  phase: string;
+  /** The words shown for it. */
+  label: string;
+  /**
+   * Work the page does not wait for (ground streamed after the first picture). It does not count
+   * towards the overall bar; before `ready()` its row says it continues in the background, and
+   * after it the corner pill shows it while it is busy.
+   */
+  background?: boolean;
+}
+
+/**
+ * Steps for the phases every page shares, in the examples' words. A page lists them as they are,
+ * spreads one to change it (`{ ...STEPS.ground, background: true }`), or writes its own.
+ */
+export const STEPS = {
+  /** `boot()`: the adapter and device. */
+  device: { phase: "device", label: "Starting WebGPU" },
+  /** The renderer's shader modules (`trackRenderer`). */
+  shaders: { phase: LOAD_PHASES.shaders, label: "Linking shaders" },
+  /** The renderer's pipelines (`trackRenderer`). */
+  pipelines: { phase: LOAD_PHASES.pipelines, label: "Compiling pipelines" },
+  /** Entities from the generator pool (or its cache). */
+  models: { phase: LOAD_PHASES.models, label: "Generating models" },
+  /** First-sight model uploads of an instance layer. */
+  upload: { phase: LOAD_PHASES.upload, label: "Uploading models" },
+  /** An instance layer's static placement. */
+  placement: { phase: LOAD_PHASES.placement, label: "Placing instances" },
+  /** Chunks of a chunked world. */
+  ground: { phase: LOAD_PHASES.ground, label: "Building the ground" },
+} as const satisfies Record<string, LoadingStep>;
+
 /** Options for {@link showLoadingScreen}. */
 export interface LoadingScreenOptions {
   /** The heading: the page's name. */
   title: string;
-  /** The line under it; defaults to the page's entry in `PAGE_BLURBS` (by `title`). */
+  /** The line under it. */
   blurb?: string;
+  /**
+   * The rows, in the order shown. Phases not listed are not shown (they are still on the
+   * tracker); listed ones that have not started show as pending.
+   */
+  steps: readonly LoadingStep[];
   /** Where the overlay goes (default `#app`, else `body`); it covers this element. */
   parent?: HTMLElement;
 }
@@ -47,8 +90,8 @@ export interface LoadingScreenOptions {
 export interface LoadingScreen {
   /**
    * The page has drawn its first picture (or is about to: the overlay waits two frames). The
-   * overlay stops taking input at once, fades out and is removed; phases still busy afterwards
-   * show in the corner pill.
+   * overlay stops taking input at once, fades out and is removed; listed steps still busy
+   * afterwards show in the corner pill.
    */
   ready(): void;
   /**
@@ -58,12 +101,18 @@ export interface LoadingScreen {
    * the overlay goes and the failure moves to the pill.
    */
   fail(err: unknown): void;
+  /**
+   * Replace the steps, for a list that depends on what the page learnt after `boot` (the
+   * valley's rats come only at some scales, and the scale depends on the GPU). Rows of phases
+   * already under way keep their progress.
+   */
+  setSteps(steps: readonly LoadingStep[]): void;
   /** Remove the overlay and the pill and stop listening. */
   dispose(): void;
 }
 
 /** A screen that shows nothing, for pages that draw their own (minecraft-region before a drop). */
-export const NO_SCREEN: LoadingScreen = { ready() {}, fail() {}, dispose() {} };
+export const NO_SCREEN: LoadingScreen = { ready() {}, fail() {}, setSteps() {}, dispose() {} };
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] => {
   const e = document.createElement(tag);
@@ -73,10 +122,10 @@ const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
 };
 
 /**
- * A phase's progress from 0 to 1: `done / total` when it is counted, else 0 while busy and 1
- * once it has ended.
+ * A phase's progress from 0 to 1: 0 before it starts, `done / total` when it is counted, else 0
+ * while busy and 1 once it has ended.
  */
-const fraction = (p: PhaseState) => (p.total > 0 ? p.done / p.total : p.busy ? 0 : 1);
+const fraction = (p: PhaseState | undefined) => (!p ? 0 : p.total > 0 ? p.done / p.total : p.busy ? 0 : 1);
 
 /** `12/40 · 5 cached`, with the phase's time once it has ended (if it took a tenth of a second or more). */
 function countText(p: PhaseState): string {
@@ -92,8 +141,20 @@ const message = (err: unknown) =>
   err instanceof Error ? err.message || err.name : typeof err === "string" ? err : (() => { try { return JSON.stringify(err); } catch { return String(err); } })();
 
 /**
- * Show `load` as the page's loading screen (see the file comment). Call it before the load
- * starts; call `ready()` once the page has drawn.
+ * Show `load` as the page's loading screen (see the file comment), with one row per step of
+ * `opts.steps`. Call it before the load starts; call `ready()` once the page has drawn.
+ *
+ * @example
+ * ```ts
+ * const screen = showLoadingScreen(load, {
+ *   title: "valley", blurb: "The valley, refined and streamed",
+ *   steps: [
+ *     { phase: "terrain", label: "Shaping the terrain" },
+ *     STEPS.models,
+ *     { ...STEPS.ground, background: true },
+ *   ],
+ * });
+ * ```
  */
 export function showLoadingScreen(load: LoadTracker, opts: LoadingScreenOptions): LoadingScreen {
   const parent = opts.parent ?? document.getElementById("app") ?? document.body;
@@ -109,8 +170,7 @@ export function showLoadingScreen(load: LoadTracker, opts: LoadingScreenOptions)
   mark.alt = "";
   const titles = el("div");
   titles.append(el("h1", "", opts.title));
-  const blurb = opts.blurb ?? PAGE_BLURBS[opts.title];
-  if (blurb) titles.append(el("p", "loading-blurb", blurb));
+  if (opts.blurb) titles.append(el("p", "loading-blurb", opts.blurb));
   head.append(mark, titles);
   const list = el("ol", "loading-phases");
   const overall = el("div", "loading-overall");
@@ -139,61 +199,84 @@ export function showLoadingScreen(load: LoadTracker, opts: LoadingScreenOptions)
   pill.append(el("i"), pillText);
   (hud ?? parent).append(pill);
 
-  const rows = new Map<string, { li: HTMLLIElement; mark: HTMLElement; count: HTMLElement; fill: HTMLElement }>();
+  interface Row { step: LoadingStep; li: HTMLLIElement; mark: HTMLElement; count: HTMLElement; fill: HTMLElement }
+  let rows: Row[] = [];
+  /** Build the rows for `steps`, in their order, replacing any there were. */
+  function layOut(steps: readonly LoadingStep[]): void {
+    list.replaceChildren();
+    rows = steps.map((step) => {
+      const li = el("li", "loading-row pending");
+      li.classList.toggle("background", !!step.background);
+      const m = el("span", "loading-mark");
+      const name = el("span", "loading-name", step.label);
+      if (step.background) name.append(el("small", "loading-note", "continues in the background"));
+      const count = el("span", "loading-count");
+      const bar = el("span", "loading-bar");
+      const fill = el("i");
+      bar.append(fill);
+      li.append(m, name, count, bar);
+      list.append(li);
+      return { step, li, mark: m, count, fill };
+    });
+  }
+  layOut(opts.steps);
+
   let stage: "loading" | "ready" | "gone" = "loading";
   /** The failure shown, once `fail` was called: it stays up, on the overlay or in the pill. */
   let failure: string | null = null;
   let queued = 0;
   let pillTimer: ReturnType<typeof setTimeout> | undefined;
 
+  const phasesNow = () => new Map(load.snapshot().phases.map((p) => [p.phase, p]));
+
   function drawOverlay(): void {
-    const snap = load.snapshot();
-    for (const p of snap.phases) {
-      let row = rows.get(p.phase);
-      if (!row) {
-        const li = el("li", "loading-row");
-        const m = el("span", "loading-mark");
-        const count = el("span", "loading-count");
-        const bar = el("span", "loading-bar");
-        const fill = el("i");
-        bar.append(fill);
-        li.append(m, el("span", "loading-name", phaseLabel(p.phase)), count, bar);
-        list.append(li);
-        row = { li, mark: m, count, fill };
-        rows.set(p.phase, row);
-      }
-      row.li.classList.toggle("busy", p.busy);
-      row.li.classList.toggle("done", !p.busy);
-      row.li.classList.toggle("counted", p.total > 0);
-      row.mark.textContent = p.busy ? "" : "✓";
-      row.count.textContent = countText(p);
+    const phases = phasesNow();
+    let sum = 0, counted = 0;
+    for (const row of rows) {
+      const p = phases.get(row.step.phase);
+      row.li.classList.toggle("pending", !p);
+      row.li.classList.toggle("busy", !!p?.busy);
+      row.li.classList.toggle("done", !!p && !p.busy);
+      row.li.classList.toggle("counted", !!p && p.total > 0);
+      row.mark.textContent = p && !p.busy ? "✓" : "";
+      row.count.textContent = p ? countText(p) : "";
       row.fill.style.transform = `scaleX(${fraction(p)})`;
+      if (!row.step.background) { sum += fraction(p); counted++; }
     }
-    // Overall: the mean of the phases' fractions, over the phases seen so far, unweighted (a
-    // model and a chunk are not worth the same, and nothing here knows how much each costs).
-    // So it moves backwards when a new phase starts; that is what is known, and it is not
-    // smoothed over.
-    const all = snap.phases.length ? snap.phases.reduce((a, p) => a + fraction(p), 0) / snap.phases.length : 0;
+    // Overall: the mean of the foreground steps' fractions, pending ones at 0, unweighted (a
+    // model and a chunk are not worth the same, and nothing here knows how much each costs). It
+    // only moves backwards when a counted phase's total grows; that is what is known, and it is
+    // not smoothed over.
+    const all = counted ? sum / counted : 0;
     overallFill.style.transform = `scaleX(${all})`;
     overall.setAttribute("aria-valuenow", String(Math.round(all * 100)));
   }
 
+  /** The listed steps busy now, with their phases. */
+  const busyRows = () => {
+    const phases = phasesNow();
+    return rows.flatMap((row) => {
+      const p = phases.get(row.step.phase);
+      return p?.busy ? [{ step: row.step, p }] : [];
+    });
+  };
+
   function drawPill(): void {
     if (failure !== null) return;
-    const busy = load.snapshot().phases.filter((p) => p.busy);
+    const busy = busyRows();
     if (!busy.length) {
       clearTimeout(pillTimer);
       pillTimer = undefined;
       pill.classList.remove("on");
       return;
     }
-    pillText.textContent = busy.map((p) => `${phaseLabel(p.phase)}${p.total > 0 ? ` ${p.done}/${p.total}` : ""}`).join(" · ");
+    pillText.textContent = busy.map(({ step, p }) => `${step.label}${p.total > 0 ? ` ${p.done}/${p.total}` : ""}`).join(" · ");
     if (!pill.classList.contains("on") && pillTimer === undefined) {
-      // Only a phase that stays busy for a while earns the pill; a quick one (a pipeline variant
+      // Only a step that stays busy for a while earns the pill; a quick one (a pipeline variant
       // compiled on the first frame) would only blink.
       pillTimer = setTimeout(() => {
         pillTimer = undefined;
-        if (load.snapshot().busy) pill.classList.add("on");
+        if (busyRows().length) pill.classList.add("on");
       }, PILL_AFTER_MS);
     }
   }
@@ -229,6 +312,12 @@ export function showLoadingScreen(load: LoadTracker, opts: LoadingScreenOptions)
       if (stage !== "loading") return;
       stage = "ready";
       unhook();
+      if (import.meta.env.DEV) {
+        // A foreground step that never ran is a list out of step with the page's load.
+        const phases = phasesNow();
+        const missed = rows.filter((r) => !r.step.background && !phases.has(r.step.phase)).map((r) => r.step.phase);
+        if (missed.length) console.warn(`[loading] listed steps that never started before ready(): ${missed.join(", ")}`);
+      }
       overlay.removeAttribute("aria-busy");
       overlay.classList.add("through");
       // Two frames: the page's first picture is presented before the overlay starts to go.
@@ -257,6 +346,12 @@ export function showLoadingScreen(load: LoadTracker, opts: LoadingScreenOptions)
         error.textContent = failure;
         error.hidden = false;
       } else showFailureInPill();
+    },
+    setSteps(steps) {
+      if (stage === "gone") return;
+      layOut(steps);
+      if (stage === "loading") drawOverlay();
+      else drawPill();
     },
     dispose() {
       if (stage === "gone") return;

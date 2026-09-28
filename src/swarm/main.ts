@@ -21,14 +21,27 @@ import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosp
 import { generateTerrain } from "@voxolith/gen-terrain";
 import { generateCreature, PRESETS } from "@voxolith/gen-creature";
 import { boot, runLoop } from "../shared/boot";
-import { reportLoadTimeline, step } from "../shared/loading";
+import { prepared, reportLoadTimeline, step } from "../shared/loading";
+import { STEPS } from "../shared/loading-screen";
 
 const params = new URLSearchParams(location.search);
 const COUNT = Math.max(1, Math.min(2000, Number(params.get("count") ?? 300)));
 const SIZE = { x: 640, y: 72, z: 640 };
 const seed = hashSeed(params.get("seed") ?? "swarm");
 
-const app = await boot("swarm");
+// The loading screen's rows, in this order (phases not listed are not shown, but stay on the
+// tracker for window.loadTimeline and ?perf).
+const app = await boot("swarm", {
+  blurb: "A crowd of animated rats",
+  steps: [
+    STEPS.device,
+    { phase: "terrain", label: "Shaping the terrain" },
+    { phase: "creatures", label: "Generating rats" },
+    STEPS.shaders,
+    STEPS.pipelines,
+    STEPS.ground,
+  ],
+});
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
   const rng = seededRandom(seed);
@@ -41,14 +54,18 @@ if (app) {
   const variants: Entity[] = await step(load, "creatures", () => KINDS.map((k, i) => generateCreature(PRESETS[k], seededRandom(seed + i * 97), k).entity));
   const bases = variants.map((e, i) => palette.allocate(e.model.roles, KINDS[i]).base);
 
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load) });
+  const mode = params.has("rigged") ? "rigged" : params.has("instances") ? "instances" : "stamped";
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   renderer.setQuality(gpu.software ? "low" : "medium");
+  // deferPipelines above: compile what the crowd mode draws (below) while the ground goes in, and
+  // await it before the first frame.
+  const compiled = prepared(renderer.prepare({ instances: mode !== "stamped", parts: mode === "rigged" }));
   await step(load, "ground", () => renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: terrain.maxY(), z1: SIZE.z - 1 }, (cells, ox, oy, oz) => terrain.fillBrick(cells, ox, oy, oz, groundBase)));
   const ground = (x: number, z: number) => terrain.heightAt(Math.max(0, Math.min(SIZE.x - 1, Math.round(x))), Math.max(0, Math.min(SIZE.z - 1, Math.round(z))));
 
-  // Stamped (default), baked instances, or posed on the GPU. Instances use the world palette slots.
-  const mode = params.has("rigged") ? "rigged" : params.has("instances") ? "instances" : "stamped";
+  // Stamped (default), baked instances, or posed on the GPU (mode, above). Instances use the world
+  // palette slots.
   const crowd = mode === "stamped"
     ? makeCrowd({ stamper: makeBrickStamper(renderer, { size: SIZE }), near: 140, farFps: 6, freeze: 700, budgetMs: 5 })
     : makeCrowd({ instances: makeInstanceLayer(renderer, { load }), rigged: mode === "rigged", near: 140, farFps: 6, freeze: 700, budgetMs: 5 });
@@ -126,6 +143,7 @@ if (app) {
   let last = performance.now();
   const acc = { frames: 0, ms: 0, bakes: 0, bricks: 0, hits: 0, misses: 0, fpsT: performance.now() };
   let stats: CrowdStats | null = null;
+  await compiled;
   const loop = runLoop((now) => {
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;

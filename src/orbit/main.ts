@@ -6,10 +6,20 @@ import { createRenderer, OccupancyGrid, makeCamera, observeResize, resizeToDispl
 import { createInput, makeOrbitController, prepareSurface } from "@voxolith/engine/input";
 import { trackRenderer } from "@voxolith/engine";
 import { boot, runLoop } from "../shared/boot";
-import { reportLoadTimeline } from "../shared/loading";
+import { prepared, reportLoadTimeline } from "../shared/loading";
+import { STEPS } from "../shared/loading-screen";
 import { DAYLIGHT } from "../shared/env";
 
-const app = await boot("orbit");
+// The loading screen's rows, in this order (phases not listed are not shown, but stay on the
+// tracker for window.loadTimeline and ?perf).
+const app = await boot("orbit", {
+  blurb: "Procedural hills to orbit",
+  steps: [
+    STEPS.device,
+    STEPS.shaders,
+    STEPS.pipelines,
+  ],
+});
 if (app) {
   const { gpu, canvas, load, screen } = app;
 
@@ -32,7 +42,7 @@ if (app) {
   palette.set([0.45, 0.33, 0.22, 1], DIRT * 4);
   palette.set([0.25, 0.5, 0.85, 1], WATER * 4);
 
-  const renderer = await createRenderer(gpu, { size, data, palette }, { onLoad: trackRenderer(load) });
+  const renderer = await createRenderer(gpu, { size, data, palette }, { onLoad: trackRenderer(load), deferPipelines: true });
   // ?selftest: bands showing which stage of the voxel lookup works on this GPU.
   { const st = new URLSearchParams(location.search).get("selftest"); if (st !== null) renderer.setDebug(st === "3" ? 9 : st === "2" ? 8 : 7); }
   renderer.updateCoarse(new OccupancyGrid(size, data).data);
@@ -41,6 +51,8 @@ if (app) {
   // Nothing animates here, so render on demand: the loop only draws when
   // input or a resize invalidates it.
   const camera = makeCamera({ target: [size.x / 2, 8, size.z / 2], distance: 200, pitchDeg: 32, fovDeg: 35 });
+  // deferPipelines above: compile the pipelines before the first frame.
+  await prepared(renderer.prepare());
   const loop = runLoop(() => {
     resizeToDisplay(gpu);
     renderer.render({ ...camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch()), ...DAYLIGHT });

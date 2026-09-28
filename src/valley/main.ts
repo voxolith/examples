@@ -75,7 +75,9 @@ import { generateBuilding } from "@voxolith/gen-building";
 import { atScale, generateCreature, minVoxelsPerMetre, PRESETS as RATS, realSizeAt } from "@voxolith/gen-creature";
 import { houseParams, HOUSE_KINDS, layoutValley, paletteKey, TILE, valleySites, valleySpecies, valleyTerrain, workerSeed, type Season } from "../world/layout";
 import { boot, runLoop } from "../shared/boot";
-import { nextFrame, reportLoadTimeline, step } from "../shared/loading";
+import { nextFrame, prepared, reportLoadTimeline, step } from "../shared/loading";
+import { commitStatic, placementWorker } from "../shared/placement";
+import { STEPS, type LoadingStep } from "../shared/loading-screen";
 import { isPhone, pickScale, SCALES, voxelSize } from "../shared/scale";
 
 const params = new URLSearchParams(location.search);
@@ -83,12 +85,32 @@ const seed = hashSeed(params.get("seed") ?? "voxolith");
 const season = (params.get("season") ?? "summer") as Season;
 const num = (key: string, fallback: number) => (params.has(key) ? Number(params.get(key)) : fallback);
 
-const app = await boot("valley");
+/**
+ * The loading screen's rows, in this order (phases not listed are not shown, but stay on the
+ * tracker for window.loadTimeline and ?perf). The rats' row only where there are rats, which
+ * depends on the scale, which depends on the GPU (a phone): so boot shows the list without it,
+ * and the page sets it once it knows. The ground streams on after the first picture.
+ */
+const loadingSteps = (rats: boolean): LoadingStep[] => [
+  STEPS.device,
+  { phase: "terrain", label: "Shaping the terrain" },
+  { phase: "houses", label: "Measuring the houses" },
+  { phase: "layout", label: "Laying out the valley" },
+  STEPS.models,
+  ...(rats ? [{ phase: "creatures", label: "Generating rats" }] : []),
+  STEPS.shaders,
+  STEPS.pipelines,
+  STEPS.upload,
+  STEPS.placement,
+  { ...STEPS.ground, background: true },
+];
+
+const app = await boot("valley", { blurb: "The valley, refined and streamed", steps: loadingSteps(false) });
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
   // One tracker for the whole load (boot's): the generator workers, the renderer, the instance
-  // layer and the chunked ground report into it, the page adds phases of its own (houses, layout,
-  // creatures, scenery), and the loading screen shows it: full screen until the valley is up, then
+  // layer and the chunked ground report into it, the page adds phases of its own (terrain, houses,
+  // layout, creatures), and the loading screen shows it: full screen until the valley is up, then
   // the ground still streaming in the corner.
 
   // A phone gets a lighter valley: 5 cm voxels, a smaller map, one model per
@@ -120,6 +142,7 @@ if (app) {
   const ratsNote = !RAT_COUNT && !params.has("rats") && ratScale ? `rats at ${voxelSize(ratScale)}` : `${RAT_COUNT} rats`;
   /** Streamed radius, in voxels (given in metres). */
   const RADIUS = Math.max(8, num("radius", phone ? 16 : 24)) * VPM;
+  if (RAT_COUNT) screen.setSteps(loadingSteps(true));
 
   // --- the valley's design, at the world page's scale ------------------------------
   const terrain = await step(load, "terrain", () => valleyTerrain(SPAN, seed));
@@ -175,7 +198,8 @@ if (app) {
     );
     const t0 = performance.now();
     const out = await workers.generateMany(specs);
-    workers.destroy();
+    // Not awaited: it only lets the workers finish their cache writes.
+    void workers.destroy();
     let i = 0;
     for (const sp of species) { fine.set(sp.key, out.slice(i, i + sp.count)); i += sp.count; }
     console.log(`[valley] ${out.length} models in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
@@ -189,7 +213,9 @@ if (app) {
   }
 
   // --- renderer ---------------------------------------------------------------------
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load) });
+  // deferPipelines: nothing is compiled until `prepare` below, so the whole compile is awaited
+  // (and timed as the "pipelines" step) instead of stalling the first frame.
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   const quality = gpu.software || phone ? "low" : "medium";
   // Rays cross thousands of voxels of air here; the 64-voxel skip keeps
@@ -199,9 +225,15 @@ if (app) {
   // before the scale controller reacts, so it starts small.
   if (gpu.software) gpu.renderScale = Math.min(gpu.renderScale, 0.3);
   else if (phone) gpu.renderScale = Math.min(gpu.renderScale, 0.6);
+  // Compile what the frames will use while the scenery is placed: instances (the scenery is not
+  // placed yet, so say so), and instances posed on the GPU for ?rigged rats. Awaited before the
+  // first frame.
+  const compiled = prepared(renderer.prepare({ instances: true, parts: RAT_COUNT > 0 && params.has("rigged") }));
 
   const ground = refineTerrain(terrain, K, { seed });
-  const layer = makeInstanceLayer(renderer, { load });
+  // The static scenery is baked on a worker (commitAsync below), so the page keeps painting.
+  const placement = placementWorker();
+  const layer = makeInstanceLayer(renderer, { load, placement });
   // One palette per species (rocks sharing a skin share one)...
   const baseOf = (key: string) => layer.palettes.of(paletteKey(key), fine.get(key)![0].model.roles);
   // ...and one per house: each gets its own plaster or brick, roof and paint,
@@ -226,11 +258,7 @@ if (app) {
   const ratBase = rats.map((e, i) => layer.palettes.of(`rat${i}`, e.model.roles));
 
   // Scenery: every house and every plant and rock of the layout, placed where
-  // the world page stamps it, turned the same way. Placing, uploading (the
-  // engine's "upload") and indexing them ("placement") blocks for a while, so
-  // an app phase around all three is shown a frame first.
-  const scenery = load.task("scenery");
-  await nextFrame();
+  // the world page stamps it, turned the same way.
   const statics: { model: Entity["model"]; x: number; y: number; z: number; yaw: number; mirror: boolean; base: number }[] = [];
   let trees = 0, rocks = 0, plants = 0;
   for (const [hi, h] of valley.houses.entries()) {
@@ -248,9 +276,11 @@ if (app) {
     else if (pt.layer === "rock") rocks++;
     else plants++;
   }, false);
-  layer.setStatic(statics);
-  layer.commit();
-  scenery.end();
+  // Uploading the models (the engine's "upload") blocks the main thread, so its row is opened
+  // and painted first. Indexing the instances ("placement") runs on the worker: the ground
+  // streams in meanwhile, and the first picture waits for both below.
+  await step(load, STEPS.upload.phase, () => layer.setStatic(statics));
+  const placed = commitStatic(layer).finally(() => placement.destroy());
 
   // --- the ground, streamed ---------------------------------------------------------------
   const CHUNK = 256;
@@ -371,6 +401,8 @@ if (app) {
   // A light haze, whatever the weather, so the streamed edge at the horizon
   // softens; the zoom limit keeps the camera well inside it.
   const edgeFog = 0.1 / RADIUS;
+  // No frame before the pipelines are compiled (one would compile them synchronously).
+  await compiled;
   let spin = true;
   let last = performance.now();
   const loop = runLoop((now, dt) => {
@@ -488,6 +520,7 @@ if (app) {
     world.step(40);
     await nextFrame();
   }
+  await placed;
   // From here the HUD shows the valley's summary, and the loading screen's corner pill the chunks
   // still to come.
   screen.ready();

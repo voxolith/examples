@@ -40,7 +40,7 @@
 //   frames(n): Promise<void>            resolves once n more frames have been drawn and the GPU
 //                                       has finished them
 //   stats(): { vpm, view, fps, gpuMs, width, height, models, instances,
-//              loadMs: { generate, upload, place, ground, total } }
+//              loadMs: { generate, upload, place, ground, pipelines, total } }
 //   setDebug(v: number): void           renderer.setDebug
 //   setQuality(patch | null): void      renderer.setQuality(patch); null restores the page's own
 //                                       starting quality (its preset plus maxSteps 1024)
@@ -67,7 +67,8 @@ import { PRESETS as ROCKS, cloneParams as cloneRock } from "@voxolith/gen-rock";
 import { PRESETS as BUILDINGS } from "@voxolith/gen-building";
 import { atScale, generateCreature, PRESETS as RATS } from "@voxolith/gen-creature";
 import { boot, runLoop } from "../shared/boot";
-import { nextFrame, reportLoadTimeline } from "../shared/loading";
+import { nextFrame, prepared, reportLoadTimeline } from "../shared/loading";
+import { STEPS } from "../shared/loading-screen";
 import { pickScale, voxelSize } from "../shared/scale";
 
 const tStart = performance.now();
@@ -75,7 +76,20 @@ const params = new URLSearchParams(location.search);
 const seed = hashSeed("bench");
 const num = (key: string, fallback: number) => (params.has(key) && Number.isFinite(Number(params.get(key))) ? Number(params.get(key)) : fallback);
 
-const app = await boot("bench");
+// The loading screen's rows, in this order (phases not listed are not shown, but stay on the
+// tracker for window.loadTimeline and ?perf).
+const app = await boot("bench", {
+  blurb: "The renderer benchmark scene",
+  steps: [
+    STEPS.device,
+    STEPS.models,
+    STEPS.shaders,
+    STEPS.pipelines,
+    STEPS.upload,
+    STEPS.ground,
+    STEPS.placement,
+  ],
+});
 if (app) {
   // `tracker` is boot's load tracker, shown by its loading screen (`load` below is the bench's own
   // coarse timing, reported in window.bench.stats()).
@@ -93,7 +107,7 @@ if (app) {
   const START_QUALITY: RenderQuality = { ...QUALITY_PRESETS[PRESET], maxSteps: 1024 };
   const VIEWS = 4;
   let view = params.get("view") === "all" ? 0 : Math.max(0, Math.min(VIEWS - 1, Math.round(num("view", 0))));
-  const load = { generate: 0, upload: 0, place: 0, ground: 0, total: 0 };
+  const load = { generate: 0, upload: 0, place: 0, ground: 0, pipelines: 0, total: 0 };
 
   // --- the design, at 10 voxels per metre ------------------------------------------------------
   // 40 m by 40 m of low ground, 24 m of air for the tallest spruce. The water surface sits below
@@ -172,7 +186,8 @@ if (app) {
     const out = await workers.generateMany(
       all.map((k) => ({ generator: k.generator, params: k.params, seed: k.seed, entityId: k.key, ctx: { voxelsPerMetre: VPM } })),
     );
-    workers.destroy();
+    // Not awaited: it only lets the workers finish their cache writes.
+    void workers.destroy();
     all.forEach((k, i) => fine.set(k.key, out[i]));
   }
   const RAT_KINDS = ["rat", "grey rat", "lab rat", "black rat"];
@@ -184,7 +199,7 @@ if (app) {
   const palette = new PaletteAllocator(1);
   const { base: groundBase } = palette.allocate(terrain.roles, "terrain");
   const rockBase = KINDS.rocks.map((k) => palette.allocate(fine.get(k.key)!.model.roles, k.key).base);
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(tracker) });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(tracker), deferPipelines: true });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   renderer.setQuality(START_QUALITY);
   gpu.renderScale = RENDER_SCALE;
@@ -390,6 +405,13 @@ if (app) {
   layer.setDynamic([...ratList, ...movers(0)]);
   layer.commit();
   load.place = performance.now() - t;
+
+  // deferPipelines above: compile every variant the views draw (instances, the rats posed on the
+  // GPU) before the first frame, timed on its own rather than inside the first frame. After the
+  // placement, not beside it, so neither timing includes the other.
+  t = performance.now();
+  await prepared(renderer.prepare({ instances: true, parts: true }));
+  load.pipelines = performance.now() - t;
 
   let lastTime = 0;
   const loop = runLoop((now) => {

@@ -59,7 +59,8 @@ import { generateTree, PRESETS as TREES } from "@voxolith/gen-tree";
 import { generateRock, PRESETS as ROCKS } from "@voxolith/gen-rock";
 import { generateBuilding, PRESETS as BUILDINGS } from "@voxolith/gen-building";
 import { boot } from "../shared/boot";
-import { nextFrame, reportLoadTimeline, step } from "../shared/loading";
+import { nextFrame, prepared, reportLoadTimeline, step } from "../shared/loading";
+import { STEPS } from "../shared/loading-screen";
 import { isPhone } from "../shared/scale";
 
 const params = new URLSearchParams(location.search);
@@ -95,7 +96,19 @@ function lighting(phase: number, ambient: number) {
   return atmosphereFrame(t, ATMOSPHERES.clear);
 }
 
-const app = await boot("temporal");
+// The loading screen's rows, in this order (phases not listed are not shown, but stay on the
+// tracker for window.loadTimeline and ?perf).
+const app = await boot("temporal", {
+  blurb: "Shadows and AO accumulated over frames",
+  steps: [
+    STEPS.device,
+    { phase: "terrain", label: "Shaping the terrain" },
+    STEPS.models,
+    STEPS.shaders,
+    STEPS.pipelines,
+    { phase: "scene", label: "Building the scene" },
+  ],
+});
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
   const t0 = performance.now();
@@ -151,7 +164,7 @@ if (app) {
   models.end();
 
   // --- renderer ----------------------------------------------------------------------
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load) });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   const asked = params.get("quality") as QualityPreset | null;
   const quality: QualityPreset = asked && asked in QUALITY_PRESETS ? asked : gpu.software ? "low" : "medium";
@@ -160,6 +173,9 @@ if (app) {
   // Temporal accumulates the shadows and AO; the Low preset has neither.
   const canAccumulate = QUALITY_PRESETS[quality].shadowSteps > 0 || QUALITY_PRESETS[quality].ao;
   gpu.renderScale = Math.max(0.1, Math.min(1, num("renderScale", gpu.software ? 0.3 : phone ? 0.5 : gpu.renderScale)));
+  // deferPipelines above: compile the pipelines of the mode the page opens in while the scene is
+  // built, and await them before the first frame. The other mode's compile after the first picture.
+  const compiled = prepared(renderer.prepare({ temporal }));
 
   await step(load, "scene", () => {
     renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: terrain.maxY(), z1: SIZE.z - 1 }, (cells, ox, oy, oz) => terrain.fillBrick(cells, ox, oy, oz, groundBase));
@@ -217,6 +233,7 @@ if (app) {
   // nothing changes, so the GPU time of either mode settles and is recorded.
   const BURST = 40;
   let frames = 0, sinceToggle = 0;
+  await compiled;
   const loop = makeFrameLoop({
     render: (_now, dt) => {
       resizeToDisplay(gpu);
@@ -328,5 +345,9 @@ if (app) {
   syncLoop();
   loop.invalidate();
   screen.ready();
+  // The first toggle need not stall on its compile: the temporal kernels compile now, in the
+  // background (prepare skips what is made already). A toggle before they are ready compiles
+  // synchronously, as without it.
+  if (canAccumulate && !temporal) void prepared(renderer.prepare({ temporal: true }));
   void reportLoadTimeline(load, { perf: false });
 }

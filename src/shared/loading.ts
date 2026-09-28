@@ -3,10 +3,11 @@
 //
 // The engine reports what is loading (`makeLoadTracker`, with the renderer, the generator pool,
 // the chunked world and the instance layer reporting into one tracker) and draws nothing;
-// ./loading-screen.ts draws it. Events arrive synchronously, so a phase that blocks the main
-// thread (an upload, the static placement) only reaches the screen after it has finished. A page
-// that wants its row up before such a step opens an app phase of its own, waits a frame
-// (`nextFrame`, or `step` for both), then runs the step.
+// ./loading-screen.ts draws the steps a page lists. Events arrive synchronously, so a phase that blocks the main
+// thread (an upload, game work such as the terrain) only reaches the screen after it has finished.
+// A page that wants its row up before such a step opens the phase itself, waits a frame
+// (`nextFrame`, or `step` for both), then runs the step. The pipeline compile (`prepared`) and the
+// static placement (./placement.ts) need no such wait: they no longer block.
 
 import type { Perf } from "@voxolith/renderer";
 import { formatTimeline, type LoadTracker, type TimelineEntry } from "@voxolith/engine";
@@ -28,7 +29,7 @@ export const nextFrame = () => new Promise<void>((resolve) => requestAnimationFr
 
 /**
  * Run `fn` as the app phase `phase` of `load`: open the phase, wait a frame so the loading
- * screen shows its row, run `fn` (blocking or not), and close the phase, also when `fn` throws.
+ * screen shows its row (when the page lists it), run `fn` (blocking or not), and close the phase, also when `fn` throws.
  */
 export async function step<T>(load: LoadTracker, phase: string, fn: () => T | Promise<T>): Promise<T> {
   const task = load.task(phase);
@@ -38,6 +39,20 @@ export async function step<T>(load: LoadTracker, phase: string, fn: () => T | Pr
   } finally {
     task.end();
   }
+}
+
+/**
+ * Await a `renderer.prepare(...)` (the pipeline compiles, made with
+ * `RendererOptions.deferPipelines`). A compile that fails is logged and left to the first frame
+ * that needs it, which compiles it synchronously, as without `prepare`: the page still loads.
+ *
+ * @example
+ * ```ts
+ * await prepared(renderer.prepare({ instances: true }));
+ * ```
+ */
+export function prepared(compile: Promise<void>): Promise<void> {
+  return compile.catch((err) => console.warn("[pipelines] an async compile failed; compiling on first use:", err));
 }
 
 /** Options for {@link reportLoadTimeline}. */
