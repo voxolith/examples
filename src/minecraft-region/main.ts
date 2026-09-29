@@ -7,7 +7,7 @@ import { createRenderer, OccupancyGrid, buildMinecraftRegion, firstPersonFrame, 
 import { axis, button, createInput, makeActions, makeLookController, makeTouchControls, prepareSurface } from "@voxolith/engine/input";
 import { makeLoadTracker, trackRenderer } from "@voxolith/engine";
 import { boot, runLoop } from "../shared/boot";
-import { prepared, reportLoadTimeline, step } from "../shared/loading";
+import { markFrames, prepared, reportLoadTimeline, step } from "../shared/loading";
 import { NO_SCREEN, showLoadingScreen, STEPS } from "../shared/loading-screen";
 import { DAYLIGHT } from "../shared/env";
 
@@ -72,6 +72,7 @@ if (app) {
       info.textContent = `${name} · ${scene.meta.chunks} chunks · ${scene.meta.voxels.toLocaleString()} voxels · click to look, WASD move, Space/C up/down, Shift fast`;
       // The loop draws the new renderer on its next frame.
       screen.ready();
+      markFrames(tracker, r);
       void reportLoadTimeline(tracker, { perf: false });
     } catch (e) {
       info.textContent = `${name}: ${(e as Error).message}`;

@@ -59,7 +59,7 @@ import { generateTree, PRESETS as TREES } from "@voxolith/gen-tree";
 import { generateRock, PRESETS as ROCKS } from "@voxolith/gen-rock";
 import { generateBuilding, PRESETS as BUILDINGS } from "@voxolith/gen-building";
 import { boot } from "../shared/boot";
-import { nextFrame, prepared, reportLoadTimeline, step } from "../shared/loading";
+import { markFrames, nextFrame, prepared, reportLoadTimeline, step } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
 import { isPhone } from "../shared/scale";
 
@@ -345,6 +345,7 @@ if (app) {
   syncLoop();
   loop.invalidate();
   screen.ready();
+  markFrames(load, renderer);
   // The first toggle need not stall on its compile: the temporal kernels compile now, in the
   // background (prepare skips what is made already). A toggle before they are ready compiles
   // synchronously, as without it.

@@ -67,7 +67,7 @@ import { PRESETS as ROCKS, cloneParams as cloneRock } from "@voxolith/gen-rock";
 import { PRESETS as BUILDINGS } from "@voxolith/gen-building";
 import { atScale, generateCreature, PRESETS as RATS } from "@voxolith/gen-creature";
 import { boot, runLoop } from "../shared/boot";
-import { nextFrame, prepared, reportLoadTimeline } from "../shared/loading";
+import { markFrames, nextFrame, prepared, reportLoadTimeline } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
 import { pickScale, voxelSize } from "../shared/scale";
 
@@ -442,6 +442,7 @@ if (app) {
   }, true);
   observeResize(canvas, loop);
   screen.ready();
+  markFrames(tracker, renderer);
   void reportLoadTimeline(tracker, { perf: false });
 
   const fps = () => (stamps.length > 1 ? ((stamps.length - 1) * 1000) / (stamps[stamps.length - 1] - stamps[0]) : 0);

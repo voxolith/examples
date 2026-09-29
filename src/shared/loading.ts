@@ -10,12 +10,24 @@
 // static placement (./placement.ts) need no such wait: they no longer block.
 
 import type { Perf } from "@voxolith/renderer";
-import { formatTimeline, type LoadTracker, type TimelineEntry } from "@voxolith/engine";
+import { formatTimeline, LOAD_MARKS, type LoadMark, type LoadTracker, type TimelineEntry } from "@voxolith/engine";
 
 declare global {
   interface Window {
     /** The page's load timeline (the engine's `LoadTracker.timeline`), for the bench. Set once the page has loaded. */
     loadTimeline?: () => TimelineEntry[];
+    /**
+     * `performance.now()` when the page's load tracker was made (`LoadTracker.origin`): add it to
+     * a timeline time to compare it with navigation-based timestamps such as long tasks. Set with
+     * `loadTimeline`.
+     */
+    loadOrigin?: number;
+    /**
+     * The page's load marks so far (the engine's `LoadTracker.marks`), for tools that act on one
+     * while the page still loads (screenshots at the first picture and at the fine swap). Set as
+     * soon as `reportLoadTimeline` is called, unlike `loadTimeline`; times as in `loadOrigin`.
+     */
+    loadMarks?: () => LoadMark[];
   }
 }
 
@@ -55,6 +67,26 @@ export function prepared(compile: Promise<void>): Promise<void> {
   return compile.catch((err) => console.warn("[pipelines] an async compile failed; compiling on first use:", err));
 }
 
+/**
+ * Record the page's first picture and, later, its settled one: call where the page calls
+ * `screen.ready()`. Marks `LOAD_MARKS.firstFrame` now, then `LOAD_MARKS.converged` on the first
+ * animation frame (from the second one on, so the page's loop has rendered) where
+ * `renderer.converging()` reads false. Without temporal accumulation that is a frame later; a
+ * view that never settles (temporal on while it rotates) never marks it.
+ *
+ * The page's loop must keep rendering while `converging()` holds (`makeFrameLoop`'s
+ * `converging` option, or a continuous loop), or the mark waits for the next redraw.
+ */
+export function markFrames(load: LoadTracker, renderer: { converging(): boolean }): void {
+  load.mark(LOAD_MARKS.firstFrame);
+  let skip = 1;
+  const poll = () => {
+    if (skip-- > 0 || renderer.converging()) requestAnimationFrame(poll);
+    else load.mark(LOAD_MARKS.converged);
+  };
+  requestAnimationFrame(poll);
+}
+
 /** Options for {@link reportLoadTimeline}. */
 export interface ReportOptions {
   /** Log the timeline to the console (the page's `?perf`). */
@@ -66,23 +98,30 @@ export interface ReportOptions {
 }
 
 /**
- * Call once the page has kicked off its whole load. Waits until the tracker is idle and one
+ * Call once the page has kicked off its whole load. Sets `window.loadMarks` at once. Waits until the tracker is idle and one
  * frame has been drawn (the first frame compiles pipelines lazily, which reopens `pipelines`),
  * then sets `window.loadTimeline` and, under `perf`, logs `formatTimeline` to the console and
  * puts the load time in the perf overlay's label. Resolves with the timeline.
  */
 export async function reportLoadTimeline(load: LoadTracker, opts: ReportOptions): Promise<TimelineEntry[]> {
+  window.loadOrigin = load.origin;
+  window.loadMarks = () => load.marks();
   await load.idle();
   await nextFrame();
   await nextFrame();
   await load.idle();
   const timeline = load.timeline();
+  window.loadOrigin = load.origin;
   window.loadTimeline = () => load.timeline();
   if (opts.perf) {
     console.log(`[load]\n${formatTimeline(timeline)}`);
-    const end = Math.max(0, ...timeline.map((e) => e.end ?? 0));
-    const longest = timeline.reduce<TimelineEntry | null>((a, e) => (!a || e.busy > a.busy ? e : a), null);
-    const short = `load ${(end / 1000).toFixed(1)} s${longest ? ` (${longest.phase} ${(longest.busy / 1000).toFixed(1)} s)` : ""}`;
+    const phases = timeline.filter((e) => e.kind === "phase");
+    const end = Math.max(0, ...phases.map((e) => e.end ?? 0));
+    const longest = phases.reduce<TimelineEntry | null>((a, e) => (!a || e.busy > a.busy ? e : a), null);
+    const first = timeline.find((e) => e.kind === "mark" && e.phase === LOAD_MARKS.firstFrame);
+    const short =
+      `load ${(end / 1000).toFixed(1)} s${longest ? ` (${longest.phase} ${(longest.busy / 1000).toFixed(1)} s)` : ""}` +
+      (first ? ` · first frame at ${(first.start / 1000).toFixed(1)} s` : "");
     opts.overlay?.setLabel(opts.label ? `${opts.label} · ${short}` : short);
   }
   return timeline;

@@ -48,10 +48,13 @@ import {
   timeOfDay,
   type AtmosphereName,
 } from "@voxolith/engine/atmosphere";
-import { layoutValley, paletteKey, TILE, valleySites, valleySpecies, valleyTerrain, workerSeed, type Season, type Species } from "./layout";
+import { terrainInit, topOverrideData } from "@voxolith/gen-terrain";
+import { layoutValley, paletteKey, TILE, valleySites, valleySpecies, valleyTerrainParams, workerSeed, type Season, type Species } from "./layout";
 import { boot, runLoop } from "../shared/boot";
-import { nextFrame, prepared, reportLoadTimeline, step } from "../shared/loading";
+import { markFrames, nextFrame, prepared, reportLoadTimeline, step } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
+import { groundFill } from "../shared/ground";
+import { terrainOffThread } from "../shared/terrain";
 
 // One tile is 320 voxels square; `scale` lays out SPANxSPAN of them.
 const params = new URLSearchParams(location.search);
@@ -85,7 +88,8 @@ if (app) {
   // The ground and the river come from the terrain generator; the settlement
   // (./layout.ts) edits its heights in place (levelled pads) before anything
   // is built.
-  const terrain = await step(load, "terrain", () => valleyTerrain(SPAN, seed));
+  // Its height map is sampled on workers (../shared/terrain.ts), so the page keeps painting.
+  const terrain = await step(load, "terrain", () => terrainOffThread(valleyTerrainParams(SPAN), seed));
   const W = terrain.width, D = terrain.depth;
   const S = terrain.waterLevel - 1; // top water voxel
   const heightAt = (x: number, z: number) => terrain.heights[x + z * W];
@@ -293,14 +297,22 @@ if (app) {
     return base;
   };
 
+  // The ground's bricks are filled on workers (../shared/ground.ts), from the levelled terrain and
+  // the paths and yards as data; `generate` then blits the models into the chunk on this thread.
+  // ?workers=0 fills here too.
+  const fill = useWorkers && typeof Worker !== "undefined"
+    ? groundFill({ terrain: terrainInit(terrain), top: topOverrideData(terrain, topOverride), base: terrainBase })
+    : undefined;
   const world = makeChunkedWorld({
     target: renderer,
     size: SIZE,
     chunk: CHUNK,
     seed,
     load,
+    fill,
+    boxes: ({ box }) => [{ ...box, y1: maxY }],
     generate(ctx) {
-      ctx.edit({ ...ctx.box, y1: maxY }, (cells, ox, oy, oz) => terrain.fillBrick(cells, ox, oy, oz, terrainBase, topOverride));
+      if (!fill) ctx.edit({ ...ctx.box, y1: maxY }, (cells, ox, oy, oz) => terrain.fillBrick(cells, ox, oy, oz, terrainBase, topOverride));
 
       for (const hs of houses) {
         if (hs.x1 < ctx.box.x0 || hs.x0 > ctx.box.x1 || hs.z1 < ctx.box.z0 || hs.z0 > ctx.box.z1) continue;
@@ -467,11 +479,15 @@ if (app) {
   const tgt = () => orbit.target();
   world.focus(tgt()[0], tgt()[2], RADIUS);
   await compiled;
+  // Behind the loading screen the budget can be larger than a frame's.
   while (world.pending) {
-    world.step(12);
+    world.step(40);
     loop.invalidate();
     await nextFrame();
   }
+  // The whole valley is resident (the default radius covers it): the ground workers are done
+  // unless ?radius= streams.
+  if (fill && Number.isFinite(RADIUS) && RADIUS >= Math.hypot(SIZE.x, SIZE.z)) fill.destroy();
   // Keep the world following the view as it pans, at a bounded cost.
   let focusX = tgt()[0], focusZ = tgt()[2];
   streamWorld = () => {
@@ -489,6 +505,7 @@ if (app) {
   const secs = ((performance.now() - t0) / 1000).toFixed(1);
   const mem = renderer.stats();
   screen.ready();
+  markFrames(load, renderer);
   info.textContent =
     `${housesPlaced} houses, ${treesPlaced} trees, ${rocksPlaced} rocks, ${placed - rocksPlaced - treesPlaced} other plants from ${modelCount} models · ` +
     `${(tModels / 1000).toFixed(1)}s gen, ${secs}s total · ${(voxels / 1000).toFixed(0)}k voxels · ` +

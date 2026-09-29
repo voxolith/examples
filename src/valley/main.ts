@@ -11,9 +11,14 @@
 //     sparse models;
 //   - models are drawn as instances, once each on the GPU however often they
 //     stand in the valley, at the layout's exact orientations;
+//   - at 50 and 100 the valley shows first with every model built at 10 voxels
+//     per metre and drawn 5 or 10 times enlarged; the fine models are generated
+//     in the background and swapped in at once (../shared/detail.ts);
 //   - the terrain is refined per brick (a smooth surface, grass blades,
 //     pebbles) and streamed in chunks around the view, since a 128 m valley
-//     of centimetre voxels does not fit in memory at once;
+//     of centimetre voxels does not fit in memory at once; its height map is
+//     sampled and its chunks are filled on workers
+//     (../shared/terrain.ts, ../shared/ground.ts);
 //   - rats roam the village as an instanced crowd, but only at a scale where
 //     they come out at their real size (gen-creature's realSizeAt: 1 cm
 //     voxels, 100 vox/m). At 50 or 20 a rat's legs would be under two voxels
@@ -30,10 +35,13 @@
 //               ?rats= the crowd (default 60 where rats are real size, none
 //               elsewhere; ?rats=N forces a crowd of N at any scale, larger
 //               than life below 100, for testing), ?radius= the streamed
-//               radius in metres (default 24), ?seed=, ?season=, ?time=night,
-//               ?weather=, ?rigged (rats posed on the GPU), ?perf (the overlay,
-//               and the load timeline in the console), ?full
-//               (desktop settings on a phone).
+//               radius in metres (default 24), ?near= the ground in metres
+//               the first picture waits for (default 18), ?coarse=0 no
+//               coarse stage (the fine models before the first picture),
+//               ?seed=, ?season=, ?time=night, ?weather=, ?rigged (rats posed
+//               on the GPU), ?perf (the overlay, and the load timeline in the
+//               console), ?full (desktop settings on a phone), ?e2e (hooks for
+//               the input tests).
 // A phone (a touch-only pointer, or storage bindings under 512 MiB) gets a
 // lighter profile: 20 voxels per metre, scale 2, one variant, 20 rats (at
 // 100 only), a 16 m radius and the Low preset; every option above still
@@ -55,6 +63,7 @@ import {
 } from "@voxolith/renderer";
 import { hashSeed, seededRandom } from "@voxolith/renderer/core";
 import {
+  columnBoxes,
   makeChunkedWorld,
   makeInstanceLayer,
   makeVariantPool,
@@ -67,17 +76,19 @@ import {
   type VariantPool,
 } from "@voxolith/engine";
 import { makeAnimator, makeCrowd, type CrowdMember } from "@voxolith/engine/animation";
-import { makeGeneratorPool } from "@voxolith/engine/worker";
+import { makeGeneratorPool, type GeneratorPool } from "@voxolith/engine/worker";
 import { createInput, makeOrbitController, prepareSurface, recogniseGestures } from "@voxolith/engine/input";
 import { approach, atmosphereFrame, ATMOSPHERES, makeAtmosphereTransition, timeOfDay, type AtmosphereName } from "@voxolith/engine/atmosphere";
-import { refineTerrain } from "@voxolith/gen-terrain";
-import { generateBuilding } from "@voxolith/gen-building";
+import { buildRoles, fineTerrainInit, refineTerrain } from "@voxolith/gen-terrain";
 import { atScale, generateCreature, minVoxelsPerMetre, PRESETS as RATS, realSizeAt } from "@voxolith/gen-creature";
-import { houseParams, HOUSE_KINDS, layoutValley, paletteKey, TILE, valleySites, valleySpecies, valleyTerrain, workerSeed, type Season } from "../world/layout";
+import { layoutValley, paletteKey, TILE, valleySites, valleySpecies, valleyTerrainParams, workerSeed, type Season } from "../world/layout";
 import { boot, runLoop } from "../shared/boot";
-import { nextFrame, prepared, reportLoadTimeline, step } from "../shared/loading";
-import { commitStatic, placementWorker } from "../shared/placement";
+import { markFrames, nextFrame, prepared, reportLoadTimeline } from "../shared/loading";
+import { buildAround, groundFill } from "../shared/ground";
+import { terrainOffThread } from "../shared/terrain";
+import { commitStatic, sceneWorker } from "../shared/placement";
 import { STEPS, type LoadingStep } from "../shared/loading-screen";
+import { COARSE_STEPS, COARSE_VPM, coarseFactor, FINE_STEPS, stagedLoad, swapToFine } from "../shared/detail";
 import { isPhone, pickScale, SCALES, voxelSize } from "../shared/scale";
 
 const params = new URLSearchParams(location.search);
@@ -89,23 +100,25 @@ const num = (key: string, fallback: number) => (params.has(key) ? Number(params.
  * The loading screen's rows, in this order (phases not listed are not shown, but stay on the
  * tracker for window.loadTimeline and ?perf). The rats' row only where there are rats, which
  * depends on the scale, which depends on the GPU (a phone): so boot shows the list without it,
- * and the page sets it once it knows. The ground streams on after the first picture.
+ * and the page sets it once it knows. So does the coarse stage (at 50 and 100 vox/m): then the
+ * rows before the first picture are its steps, and the fine models are generated, uploaded and
+ * placed after it, in the corner pill. The ground streams on after the first picture too.
  */
-const loadingSteps = (rats: boolean): LoadingStep[] => [
+const loadingSteps = (rats: boolean, coarse: boolean): LoadingStep[] => [
   STEPS.device,
   { phase: "terrain", label: "Shaping the terrain" },
-  { phase: "houses", label: "Measuring the houses" },
   { phase: "layout", label: "Laying out the valley" },
-  STEPS.models,
+  coarse ? COARSE_STEPS.models : STEPS.models,
   ...(rats ? [{ phase: "creatures", label: "Generating rats" }] : []),
   STEPS.shaders,
   STEPS.pipelines,
-  STEPS.upload,
+  coarse ? COARSE_STEPS.upload : STEPS.encodedUpload,
   STEPS.placement,
   { ...STEPS.ground, background: true },
+  ...(coarse ? FINE_STEPS : []),
 ];
 
-const app = await boot("valley", { blurb: "The valley, refined and streamed", steps: loadingSteps(false) });
+const app = await boot("valley", { blurb: "The valley, refined and streamed", steps: loadingSteps(false, false) });
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
   // One tracker for the whole load (boot's): the generator workers, the renderer, the instance
@@ -140,70 +153,77 @@ if (app) {
   /** The HUD's note when rats were left out: the coarsest scale at which they are real size. */
   const ratScale = SCALES.find((s) => RAT_KINDS.every((k) => s >= minVoxelsPerMetre(RATS[k])));
   const ratsNote = !RAT_COUNT && !params.has("rats") && ratScale ? `rats at ${voxelSize(ratScale)}` : `${RAT_COUNT} rats`;
+  /**
+   * Metres of ground around the view's target that the first picture waits for. The first view
+   * looks down on the village from 26 m and reaches nearly to the streamed edge, so it needs most
+   * of the radius: with streaming stopped at the first picture, 12 m leaves sky showing through
+   * the ground at the sides and 16 m at the far corners at 100 vox/m.
+   */
+  const NEAR_M = 18;
   /** Streamed radius, in voxels (given in metres). */
   const RADIUS = Math.max(8, num("radius", phone ? 16 : 24)) * VPM;
-  if (RAT_COUNT) screen.setSteps(loadingSteps(true));
+  /**
+   * Ground built around the view's target before the first picture (?near=, metres); the rest of
+   * RADIUS streams in after it, nearest first.
+   */
+  const NEAR = Math.max(0, Math.min(RADIUS / VPM, num("near", NEAR_M))) * VPM;
+  /** The coarse stage's factor: models built at 10 vox/m drawn KC times enlarged (1: none, at 20). */
+  const KC = coarseFactor(VPM, params);
+  if (RAT_COUNT || KC > 1) screen.setSteps(loadingSteps(RAT_COUNT > 0, KC > 1));
 
-  // --- the valley's design, at the world page's scale ------------------------------
-  const terrain = await step(load, "terrain", () => valleyTerrain(SPAN, seed));
-  const sites = valleySites(terrain, SPAN);
+  // --- the models, on workers ------------------------------------------------------------
+  // Asked for first, so the workers generate (or read their cache) while this thread shapes the
+  // terrain. Coarse first (at 50 and 100): every species at 10 vox/m, drawn KC times enlarged,
+  // then the fine ones on the same workers, swapped in once encoded and baked
+  // (../shared/detail.ts). At 20 the fine models come first; only the houses are asked for at 10
+  // too, since the layout measures them (footprint, door) at its own scale. The pool's phases are
+  // filed per stage.
   const species = valleySpecies(seed, season, VARIANTS);
+  const isHouse = (key: string) => key.startsWith("house:");
+  const staged = stagedLoad(load);
+  const workers = makeGeneratorPool({ spawn: () => new Worker(new URL("../world/gen.worker.ts", import.meta.url), { type: "module" }), load: staged.tracker });
+  /** What produced each model (the pool's key): the scene worker's cache keeps its encoding under it. */
+  const modelKey: GeneratorPool["modelKey"] = workers.modelKey;
+  /** The species `only` keeps, at `vpm`: the entities by species key, in variant order. */
+  const generate = async (vpm: number, only: (key: string) => boolean = () => true) => {
+    const kept = species.map((sp, si) => ({ sp, si })).filter(({ sp }) => only(sp.key));
+    const out = await workers.generateMany(kept.flatMap(({ sp, si }) =>
+      Array.from({ length: sp.count }, (_, n) => ({ generator: sp.generator, params: sp.params(n), seed: workerSeed(seed, si, n), entityId: `${sp.key}-${n}`, ctx: { voxelsPerMetre: vpm } })),
+    ));
+    const m = new Map<string, Entity[]>();
+    let i = 0;
+    for (const { sp } of kept) { m.set(sp.key, out.slice(i, i + sp.count)); i += sp.count; }
+    return m;
+  };
+  const t0 = performance.now();
+  const coarse = generate(COARSE_VPM, KC > 1 ? undefined : isHouse);
+  if (KC > 1) staged.fine("models");
+  const fine = generate(VPM);
+  void fine.then(() => console.log(`[valley] ${species.reduce((n, sp) => n + sp.count, 0)} models at ${VPM} vox/m in ${((performance.now() - t0) / 1000).toFixed(1)} s`));
+  // Not awaited: destroying lets the workers finish their cache writes.
+  void fine.finally(() => void workers.destroy()).catch(() => {});
 
-  // Houses are measured by the layout (footprint, door), so their coarse
-  // models are made here too; they are quick. Same seeds as the workers use.
-  // These are app phases: they block, so each is shown a frame before it starts.
-  const houseSpecies = species.filter((sp) => sp.key.startsWith("house:"));
-  const houses = load.task("houses", houseSpecies.reduce((n, sp) => n + sp.count, 0));
-  await nextFrame();
-  const models = new Map<string, Entity[]>();
-  const pools = new Map<string, VariantPool>();
-  species.forEach((sp, si) => {
-    if (!sp.key.startsWith("house:")) return;
-    const kind = sp.key.split(":")[1] as (typeof HOUSE_KINDS)[number];
-    models.set(sp.key, Array.from({ length: sp.count }, (_, n) => {
-      const e = generateBuilding(houseParams(kind, n), seededRandom(workerSeed(seed, si, n))).entity;
-      houses.tick();
-      return e;
-    }));
-  });
-  houses.end();
-  const layout = load.task("layout");
-  // The scatter only needs a variant's index and orientation; the entity it
-  // hands back is replaced by the fine model below.
-  for (const sp of species) pools.set(sp.key, makeVariantPool({ count: sp.count, make: () => null as unknown as Entity }));
-  const valley = layoutValley({ terrain, span: SPAN, seed, season, models, pools, sites });
-  layout.end();
+  // --- the terrain, on a worker ------------------------------------------------------
+  // Sampling the valley's height map takes about a second, so a worker does it (../shared/terrain.ts)
+  // while this thread makes the renderer and the workers above generate; the page gets the same
+  // terrain the world page makes on its own thread.
+  const terrainTask = load.task("terrain");
+  const shaped = terrainOffThread(valleyTerrainParams(SPAN), seed).finally(() => terrainTask.end());
 
   // --- palette ----------------------------------------------------------------------
   // The world's palette holds only what is in the world: terrain and paths.
   // Every model draws from a palette of its own (the instance layer's), so
-  // there is no 255-slot budget to share between species.
+  // there is no 255-slot budget to share between species. The terrain's roles depend only on
+  // its colours, so the palette (and the renderer) need not wait for its heights.
   const palette = new PaletteAllocator(1);
-  const { base: terrainBase } = palette.allocate(terrain.roles, "terrain");
+  const { base: terrainBase } = palette.allocate(buildRoles(valleyTerrainParams(SPAN).colors), "terrain");
   const settlement: Role[] = [
     { id: "path", name: "Path", color: [0.46, 0.38, 0.27] },
     { id: "path.worn", name: "Path worn", color: [0.53, 0.46, 0.34] },
     { id: "yard", name: "Trodden turf", color: [0.36, 0.42, 0.24] },
   ];
   const { base: s0 } = palette.allocate(settlement, "settlement");
-  const topOverride = valley.topOverride({ path: s0, pathWorn: s0 + 1, yard: s0 + 2 });
 
-  // --- the fine models, on workers ------------------------------------------------------
-  const fine = new Map<string, Entity[]>();
-  {
-    const workers = makeGeneratorPool({ spawn: () => new Worker(new URL("../world/gen.worker.ts", import.meta.url), { type: "module" }), load });
-    await workers.ready();
-    const specs = species.flatMap((sp, si) =>
-      Array.from({ length: sp.count }, (_, n) => ({ generator: sp.generator, params: sp.params(n), seed: workerSeed(seed, si, n), entityId: `${sp.key}-${n}`, ctx: { voxelsPerMetre: VPM } })),
-    );
-    const t0 = performance.now();
-    const out = await workers.generateMany(specs);
-    // Not awaited: it only lets the workers finish their cache writes.
-    void workers.destroy();
-    let i = 0;
-    for (const sp of species) { fine.set(sp.key, out.slice(i, i + sp.count)); i += sp.count; }
-    console.log(`[valley] ${out.length} models in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
-  }
   let rats: Entity[] = [];
   if (RAT_COUNT) {
     const task = load.task("creatures", RAT_KINDS.length);
@@ -228,14 +248,68 @@ if (app) {
   // Compile what the frames will use while the scenery is placed: instances (the scenery is not
   // placed yet, so say so), and instances posed on the GPU for ?rigged rats. Awaited before the
   // first frame.
-  const compiled = prepared(renderer.prepare({ instances: true, parts: RAT_COUNT > 0 && params.has("rigged") }));
+  // The coarse stage draws scaled models, a variant of its own: the unscaled one is compiled
+  // alongside and awaited before the swap, so neither compiles on a frame.
+  const parts = RAT_COUNT > 0 && params.has("rigged");
+  const compiled = prepared(renderer.prepare({ instances: true, parts, scaled: KC > 1 }));
+  const compiledFine = KC > 1 ? prepared(renderer.prepare({ instances: true, parts })) : compiled;
+
+  // --- the valley's design, at the world page's scale ------------------------------
+  const terrain = await shaped;
+  const sites = valleySites(terrain, SPAN);
+  // The layout measures the houses at its scale: the 10 vox/m models from the workers.
+  const houses = await coarse;
+  const layout = load.task("layout");
+  const models = new Map([...houses].filter(([key]) => isHouse(key)));
+  // The scatter only needs a variant's index and orientation; the entity it
+  // hands back is replaced by the placed model below.
+  const pools = new Map<string, VariantPool>();
+  for (const sp of species) pools.set(sp.key, makeVariantPool({ count: sp.count, make: () => null as unknown as Entity }));
+  const valley = layoutValley({ terrain, span: SPAN, seed, season, models, pools, sites });
+  const topOverride = valley.topOverride({ path: s0, pathWorn: s0 + 1, yard: s0 + 2 });
+  layout.end();
 
   const ground = refineTerrain(terrain, K, { seed });
-  // The static scenery is baked on a worker (commitAsync below), so the page keeps painting.
-  const placement = placementWorker();
-  const layer = makeInstanceLayer(renderer, { load, placement });
-  // One palette per species (rocks sharing a skin share one)...
-  const baseOf = (key: string) => layer.palettes.of(paletteKey(key), fine.get(key)![0].model.roles);
+  // The ground's bricks are filled on workers (../shared/ground.ts), from the levelled terrain and
+  // the settlement's surface as they are now: nothing edits the heights after this.
+  const fill = groundFill({ fine: fineTerrainInit(ground, topOverride), base: terrainBase });
+
+  // --- the ground, streamed ---------------------------------------------------------------
+  const CHUNK = 256;
+  /** Chunks built so far, for the e2e check that moving streams new ground. */
+  let built = 0;
+  const world = makeChunkedWorld({
+    target: renderer,
+    size: SIZE,
+    chunk: CHUNK,
+    seed,
+    load,
+    fill,
+    // A box per 8x8 brick column, sized to what the column holds: the fine terrain answers a
+    // column's bricks in a run.
+    boxes: ({ box }) => columnBoxes(box, (ox, oz) => ground.columnSpan(ox, oz)),
+    // Runs once a chunk's bricks are in.
+    generate() {
+      built++;
+    },
+  });
+  // Where the camera starts (the village, or the glade at night): focused now, so the workers
+  // fill the ground there while this thread sets up the scenery. Chunks are only copied in by
+  // `step`, from the loading wait below and then the frame loop.
+  const night0 = params.get("time") === "night";
+  const [vx, vz] = [sites.VC[0] * K, sites.VC[1] * K];
+  const start: [number, number] = night0 ? [sites.GC[0] * K, sites.GC[1] * K] : [vx, vz];
+  world.focus(start[0], start[1], RADIUS, RADIUS * 1.3);
+  /** The first stage's models: coarse at 50 and 100, fine at 20. */
+  const first = KC > 1 ? houses : await fine;
+  // The static scenery's models are encoded and the set baked on a worker (commitAsync below), so
+  // the page keeps painting.
+  const worker = sceneWorker();
+  // Every static model comes from the pool (the rats are dynamic), so each has a key.
+  const layer = makeInstanceLayer(renderer, { load: staged.tracker, worker, modelKey });
+  // One palette per species (rocks sharing a skin share one; every scale of a model has the same
+  // roles, so both stages share them)...
+  const baseOf = (key: string) => layer.palettes.of(paletteKey(key), first.get(key)![0].model.roles);
   // ...and one per house: each gets its own plaster or brick, roof and paint,
   // a shade either way of its style's, so no two houses in the village match.
   const houseBase = (key: string, n: number) => {
@@ -244,7 +318,7 @@ if (app) {
       Math.min(1, c[0] * f * (1 + warm)), Math.min(1, c[1] * f), Math.min(1, c[2] * f * (1 - warm)),
     ];
     const wall = 0.88 + 0.24 * h(1), wallWarm = (h(2) - 0.5) * 0.12, roof = 0.8 + 0.35 * h(3), paint = h(4);
-    return layer.palettes.of(`${key}#${n}`, fine.get(key)![0].model.roles, (c, r) => {
+    return layer.palettes.of(`${key}#${n}`, first.get(key)![0].model.roles, (c, r) => {
       if (r.id.startsWith("wall") || r.id === "brick.exposed") return shade(c, wall, wallWarm);
       if (r.id.startsWith("roof") || r.id === "ridge") return shade(c, roof, 0);
       // Doors and shutters: a painted colour of its own.
@@ -259,59 +333,37 @@ if (app) {
 
   // Scenery: every house and every plant and rock of the layout, placed where
   // the world page stamps it, turned the same way.
-  const statics: { model: Entity["model"]; x: number; y: number; z: number; yaw: number; mirror: boolean; base: number }[] = [];
+  // Spots first (species and variant), then the placements of either stage's models on them.
+  const spots: { key: string; variant: number; x: number; y: number; z: number; yaw: number; mirror: boolean; base: number }[] = [];
   let trees = 0, rocks = 0, plants = 0;
   for (const [hi, h] of valley.houses.entries()) {
-    const e = fine.get(h.key)![h.variant % fine.get(h.key)!.length];
     const { yaw, mirror } = orientationYaw(h.orientation);
-    statics.push({ model: e.model, x: h.x * K, y: h.y * K, z: h.z * K, yaw, mirror, base: houseBase(h.key, hi) });
+    spots.push({ key: h.key, variant: h.variant, x: h.x * K, y: h.y * K, z: h.z * K, yaw, mirror, base: houseBase(h.key, hi) });
   }
   valley.scatter(0, 0, COARSE.x - 1, COARSE.z - 1, (pt) => {
-    const list = fine.get(pt.key)!;
-    const e = list[pt.variant.index % list.length];
     const { yaw, mirror } = orientationYaw(pt.variant.orientation);
     const x = pt.x * K, z = pt.z * K;
-    statics.push({ model: e.model, x, y: ground.heightAt(x + K / 2, z + K / 2) + 1, z, yaw, mirror, base: baseOf(pt.key) });
+    spots.push({ key: pt.key, variant: pt.variant.index, x, y: ground.heightAt(x + K / 2, z + K / 2) + 1, z, yaw, mirror, base: baseOf(pt.key) });
     if (pt.layer === "tree") trees++;
     else if (pt.layer === "rock") rocks++;
     else plants++;
   }, false);
-  // Uploading the models (the engine's "upload") blocks the main thread, so its row is opened
-  // and painted first. Indexing the instances ("placement") runs on the worker: the ground
-  // streams in meanwhile, and the first picture waits for both below.
-  await step(load, STEPS.upload.phase, () => layer.setStatic(statics));
-  const placed = commitStatic(layer).finally(() => placement.destroy());
-
-  // --- the ground, streamed ---------------------------------------------------------------
-  const CHUNK = 256;
-  /** Chunks built so far, for the e2e check that moving streams new ground. */
-  let built = 0;
-  const world = makeChunkedWorld({
-    target: renderer,
-    size: SIZE,
-    chunk: CHUNK,
-    seed,
-    load,
-    generate(ctx) {
-      // A box per 8x8 brick column, sized to what the column holds: the
-      // fine terrain answers a column's bricks in a run.
-      built++;
-      const boxes = [];
-      for (let oz = ctx.box.z0; oz <= ctx.box.z1; oz += 8)
-        for (let ox = ctx.box.x0; ox <= ctx.box.x1; ox += 8) {
-          const [y0, y1] = ground.columnSpan(ox, oz);
-          boxes.push({ x0: ox, y0, z0: oz, x1: ox + 7, y1, z1: oz + 7 });
-        }
-      renderer.editMany(boxes, (cells, ox, oy, oz) => ground.fillBrick(cells, ox, oy, oz, terrainBase, topOverride));
-    },
+  // Encoding the models (the engine's "upload") and indexing the instances ("placement") run on
+  // the worker; the main thread only adds the encoded models, a few per frame. The ground streams
+  // in meanwhile, and the first picture waits for both below.
+  /** The static set for one stage's models, drawn `scale` times enlarged. */
+  const statics = (models: Map<string, Entity[]>, scale: number) => spots.map(({ key, variant, ...s }) => {
+    const list = models.get(key)!;
+    return { ...s, model: list[variant % list.length].model, scale };
   });
+  layer.setStatic(statics(first, KC));
+  const placed = commitStatic(layer);
 
   // --- rats ---------------------------------------------------------------------------------
   interface Rat extends CrowdMember { speed: number; turn: number; timer: number; }
   // ?rigged poses the rats on the GPU from one rest model per variant instead of baking poses.
   const crowd = RAT_COUNT === 0 ? null : makeCrowd({ instances: layer, rigged: params.has("rigged"), near: 3000 * cm, farFps: 6, freeze: 12000 * cm, budgetMs: 4 });
   const rng = seededRandom(seed ^ 0x51ed);
-  const [vx, vz] = [sites.VC[0] * K, sites.VC[1] * K];
   const members: Rat[] = [];
   for (let i = 0; i < RAT_COUNT; i++) {
     const k = i % rats.length;
@@ -350,11 +402,9 @@ if (app) {
   };
 
   // --- camera -------------------------------------------------------------------------
-  const night0 = params.get("time") === "night";
   const camera = makeCamera({ target: [vx, 0, vz], distance: 2600 * cm, pitchDeg: 38, fovDeg: 42 });
   prepareSurface(canvas, { contextMenu: false });
   const input = createInput(canvas, { loop: { invalidate: () => loop.invalidate() } });
-  const start: [number, number] = night0 ? [sites.GC[0] * K, sites.GC[1] * K] : [vx, vz];
   const orbit = makeOrbitController(input, {
     yaw: 35, pitchLimits: [8, 85], distanceLimits: [150 * cm, RADIUS * 0.8], fovDeg: 42, pan: "secondary",
     onChange: () => perf.reprobe(),
@@ -510,20 +560,21 @@ if (app) {
       focusX = tx; focusZ = tz;
       world.focus(tx, tz, RADIUS, RADIUS * 1.3);
     }
-    if (world.pending) world.step(6);
+    // Frame-safe: a chunk takes about 10 ms to copy in at 100 vox/m, and at least one is applied.
+    if (world.pending) world.step(8);
   }
   world.focus(orbit.target()[0], orbit.target()[2], RADIUS, RADIUS * 1.3);
   focusX = orbit.target()[0]; focusZ = orbit.target()[2];
-  const total = world.pending;
-  // Build the middle of the view before showing the page, the rest streams in.
-  while (world.pending > total * 0.6) {
-    world.step(40);
-    await nextFrame();
-  }
+  // Build the ground within NEAR of the view's target before showing the page; the rest streams in.
+  // readyAround tests chunk centres, so half a chunk's diagonal more takes every chunk that
+  // reaches into the disc; never more than the focus queues, or it would wait forever.
+  // Behind the loading screen the main thread has nothing better to do than copy chunks in.
+  await buildAround(world, focusX, focusZ, Math.min(RADIUS, NEAR + CHUNK * Math.SQRT1_2), 40);
   await placed;
   // From here the HUD shows the valley's summary, and the loading screen's corner pill the chunks
   // still to come.
   screen.ready();
+  markFrames(load, renderer);
 
   const acc = { frames: 0, t: performance.now() };
   const report = () => {
@@ -540,9 +591,24 @@ if (app) {
   report();
   void reportLoadTimeline(load, { perf: params.has("perf"), overlay: perf });
 
+  // --- the fine set, swapped in -----------------------------------------------------------
+  // The coarse set draws until the fine bake applies; then its models are released. The rats'
+  // crowd commits the layer every frame, which only sends its moving set meanwhile.
+  let detail = KC === 1;
+  if (KC > 1) {
+    void (async () => {
+      const models = await fine;
+      await compiledFine;
+      await swapToFine(staged, layer, statics(models, 1));
+      detail = true;
+    })()
+      .catch((err) => screen.fail(err))
+      .finally(() => void worker.destroy());
+  } else void placed.finally(() => void worker.destroy());
+
   if (params.has("e2e")) {
     Object.assign(window, {
-      valleyStats: () => ({ ...renderer.instanceStats(), houses: valley.houses.length, trees, rocks, plants, rats: members.length, resident: world.resident, pending: world.pending, built, first: members[0] ? { x: members[0].x, z: members[0].z } : null, ratSum: members.reduce((n, r) => n + r.x + r.z, 0) }),
+      valleyStats: () => ({ ...renderer.instanceStats(), houses: valley.houses.length, trees, rocks, plants, rats: members.length, resident: world.resident, pending: world.pending, built, detail, first: members[0] ? { x: members[0].x, z: members[0].z } : null, ratSum: members.reduce((n, r) => n + r.x + r.z, 0) }),
       valleyPlaces: { village: [vx, vz], glade: [sites.GC[0] * K, sites.GC[1] * K], get rat() { return members[0] ? [members[0].x, members[0].z] : [vx, vz]; } },
       valleyLook: (x: number, z: number, distance: number, pitch: number, yaw?: number) => {
         spin = false;

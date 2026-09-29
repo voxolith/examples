@@ -9,10 +9,11 @@
 //
 //   1. Until the page's first picture, a full-canvas overlay: the page title, one row per step in
 //      the listed order (pending ones dimmed with no bar, a thin bar and `done/total` for a
-//      counted phase, a sliding bar for an uncounted one, `n cached`, finished rows dimmed with a
-//      tick; a background step says it continues in the background), and an overall bar over the
-//      foreground steps. It fades in only after SHOW_AFTER_MS, so a page that is up sooner never
-//      shows it at all.
+//      counted phase, or the bar alone with `count: false`, a sliding bar for an uncounted one,
+//      `n cached` (`cached` or `30% cached` with `count: false`), finished rows dimmed with a
+//      tick; a background step says it continues in the background), and an overall bar over
+//      the foreground steps. It fades in only after SHOW_AFTER_MS, so a page that is up sooner
+//      never shows it at all.
 //   2. From `ready()` on, the overlay fades out (and stops taking input at once) and a small pill
 //      in the corner lists whatever listed step is still busy (`Building the ground 30/120`), for
 //      streamed phases; the pill goes when they are idle.
@@ -48,6 +49,13 @@ export interface LoadingStep {
    * after it the corner pill shows it while it is busy.
    */
   background?: boolean;
+  /**
+   * Show the `done/total` numbers (default true). A phase counted in units nobody reads, such as
+   * the bricks of an upload encoded on a worker (millions), sets it false: its row keeps the bar,
+   * the time and what came from a cache as a share (`cached`, or `30% cached`), and the corner
+   * pill shows only its label.
+   */
+  count?: boolean;
 }
 
 /**
@@ -65,6 +73,11 @@ export const STEPS = {
   models: { phase: LOAD_PHASES.models, label: "Generating models" },
   /** First-sight model uploads of an instance layer. */
   upload: { phase: LOAD_PHASES.upload, label: "Uploading models" },
+  /**
+   * The same, for a layer with a scene worker (`makeInstanceLayer(target, { worker })`): the
+   * engine weights each model by its bricks, so the row shows the bar without the numbers.
+   */
+  encodedUpload: { phase: LOAD_PHASES.upload, label: "Uploading models", count: false },
   /** An instance layer's static placement. */
   placement: { phase: LOAD_PHASES.placement, label: "Placing instances" },
   /** Chunks of a chunked world. */
@@ -127,11 +140,19 @@ const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
  */
 const fraction = (p: PhaseState | undefined) => (!p ? 0 : p.total > 0 ? p.done / p.total : p.busy ? 0 : 1);
 
-/** `12/40 · 5 cached`, with the phase's time once it has ended (if it took a tenth of a second or more). */
-function countText(p: PhaseState): string {
+/**
+ * `12/40 · 5 cached`, with the phase's time once it has ended (if it took a tenth of a second or
+ * more). Without the numbers the cached count is in the same unseen units, so it reads as a share:
+ * `cached` when all of it came from a cache, else `30% cached`.
+ */
+function countText(p: PhaseState, numbers: boolean): string {
   const parts: string[] = [];
-  if (p.total > 0) parts.push(`${p.done}/${p.total}`);
-  if (p.cached > 0) parts.push(`${p.cached} cached`);
+  if (numbers && p.total > 0) parts.push(`${p.done}/${p.total}`);
+  if (p.cached > 0) {
+    if (numbers) parts.push(`${p.cached} cached`);
+    else if (p.total > 0 && p.cached < p.total) parts.push(`${Math.max(1, Math.min(99, Math.round((p.cached / p.total) * 100)))}% cached`);
+    else parts.push("cached");
+  }
   const secs = !p.busy && p.end !== undefined ? (p.end - p.start) / 1000 : 0;
   if (secs >= 0.1) parts.push(`${secs.toFixed(1)} s`);
   return parts.join(" · ");
@@ -239,7 +260,7 @@ export function showLoadingScreen(load: LoadTracker, opts: LoadingScreenOptions)
       row.li.classList.toggle("done", !!p && !p.busy);
       row.li.classList.toggle("counted", !!p && p.total > 0);
       row.mark.textContent = p && !p.busy ? "✓" : "";
-      row.count.textContent = p ? countText(p) : "";
+      row.count.textContent = p ? countText(p, row.step.count !== false) : "";
       row.fill.style.transform = `scaleX(${fraction(p)})`;
       if (!row.step.background) { sum += fraction(p); counted++; }
     }
@@ -270,7 +291,7 @@ export function showLoadingScreen(load: LoadTracker, opts: LoadingScreenOptions)
       pill.classList.remove("on");
       return;
     }
-    pillText.textContent = busy.map(({ step, p }) => `${step.label}${p.total > 0 ? ` ${p.done}/${p.total}` : ""}`).join(" · ");
+    pillText.textContent = busy.map(({ step, p }) => `${step.label}${p.total > 0 && step.count !== false ? ` ${p.done}/${p.total}` : ""}`).join(" · ");
     if (!pill.classList.contains("on") && pillTimer === undefined) {
       // Only a step that stays busy for a while earns the pill; a quick one (a pipeline variant
       // compiled on the first frame) would only blink.

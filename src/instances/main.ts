@@ -8,10 +8,16 @@
 // forest would cost (?stamp stamps the trees instead).
 //
 // ?trees= (default 160), ?rats= (default 400).
+//
+// ?upscale=k (an integer >= 2) is a renderer check, not a pattern to copy: every other tree is a
+// copy of its model k times coarser, drawn k times larger (`addModel(src, { scale: k })`), so the
+// blocky one should have its fine neighbour's outline, height and place. It places the trees on
+// the main thread (no scene worker) and passes the scale to the renderer directly, so it checks the
+// renderer alone. Apps place scaled models with the layer's `EntityPlacement.scale` instead.
 
 import { createRenderer, makeCamera, makePerf, observeResize, resizeToDisplay, type Renderer } from "@voxolith/renderer";
 import { hashSeed, seededRandom } from "@voxolith/renderer/core";
-import { blitModelToBricks, makeInstanceLayer, PaletteAllocator, trackRenderer, type Entity, type EntityPlacement, type Orientation } from "@voxolith/engine";
+import { blitModelToBricks, makeInstanceLayer, modelAt, PaletteAllocator, trackRenderer, type Entity, type EntityModel, type EntityPlacement, type InstanceTarget, type Orientation } from "@voxolith/engine";
 import { makeAnimator, makeCrowd, type CrowdMember } from "@voxolith/engine/animation";
 import { createInput, makeOrbitController, prepareSurface } from "@voxolith/engine/input";
 import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
@@ -19,14 +25,17 @@ import { generateTerrain } from "@voxolith/gen-terrain";
 import { generateTree, PRESETS as TREES } from "@voxolith/gen-tree";
 import { generateCreature, PRESETS as RATS } from "@voxolith/gen-creature";
 import { boot, runLoop } from "../shared/boot";
-import { prepared, reportLoadTimeline, step } from "../shared/loading";
-import { commitStatic, placementWorker } from "../shared/placement";
+import { markFrames, prepared, reportLoadTimeline, step } from "../shared/loading";
+import { commitStatic, sceneWorker } from "../shared/placement";
 import { STEPS } from "../shared/loading-screen";
 
 const params = new URLSearchParams(location.search);
 const TREE_COUNT = Math.max(0, Math.min(2000, Number(params.get("trees") ?? 160)));
 const RAT_COUNT = Math.max(0, Math.min(3000, Number(params.get("rats") ?? 400)));
 const STAMP = params.has("stamp");
+const UPSCALE = STAMP ? 0 : Math.max(0, Math.floor(Number(params.get("upscale") ?? 0)));
+if (UPSCALE === 1) console.warn("[instances] ?upscale needs an integer >= 2; ignored");
+const UPSCALED = UPSCALE >= 2;
 const SIZE = { x: 896, y: 176, z: 896 };
 const seed = hashSeed(params.get("seed") ?? "instances");
 
@@ -43,7 +52,8 @@ const app = await boot("instances", {
     STEPS.pipelines,
     STEPS.ground,
     // ?stamp writes the trees into the world instead of placing them.
-    ...(STAMP ? [{ phase: "stamp", label: "Stamping the trees" }] : [STEPS.upload, STEPS.placement]),
+    // ?upscale uploads and places on the main thread, so its upload row counts models.
+    ...(STAMP ? [{ phase: "stamp", label: "Stamping the trees" }] : [UPSCALED ? STEPS.upload : STEPS.encodedUpload, STEPS.placement]),
   ],
 });
 if (app) {
@@ -73,13 +83,19 @@ if (app) {
   renderer.setQuality(gpu.software ? "low" : "medium");
   // deferPipelines above: compile the pipelines the frames will use (instances: none is placed
   // yet) while the ground and the trees go in, and await them before the first frame.
-  const compiled = prepared(renderer.prepare({ instances: !STAMP || RAT_COUNT > 0 }));
+  const compiled = prepared(renderer.prepare({ instances: !STAMP || RAT_COUNT > 0, ...(UPSCALED ? { scaled: true } : {}) }));
   await step(load, "ground", () => renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: terrain.maxY(), z1: SIZE.z - 1 }, (cells, ox, oy, oz) => terrain.fillBrick(cells, ox, oy, oz, groundBase)));
   const ground = (x: number, z: number) => terrain.heightAt(Math.max(0, Math.min(SIZE.x - 1, Math.round(x))), Math.max(0, Math.min(SIZE.z - 1, Math.round(z))));
 
-  // The trees' static set is baked on a worker (commitAsync below), so the page keeps painting.
-  const placement = STAMP ? undefined : placementWorker();
-  const layer = makeInstanceLayer(renderer, { load, placement });
+  // The trees are encoded and their static set baked on a worker (commitAsync below), so the page
+  // keeps painting.
+  const worker = STAMP || UPSCALED ? undefined : sceneWorker();
+  // The trees are grown here, not on the generator pool, so they have no pool key; a key made of
+  // the generator's parameters and seed would not change when the generator's code does (the
+  // cache is salted with the scene worker's URL only), so the worker hashes their bytes instead.
+  // They are small: the hash costs next to nothing, and their bricks are still sent.
+  const upscale = UPSCALED ? upscaleCheck(renderer, trees, UPSCALE) : undefined;
+  const layer = makeInstanceLayer(upscale?.target ?? renderer, { load, worker, hashModels: true });
   // Trees on dry ground, spaced, at any heading.
   const placed: { x: number; z: number }[] = [];
   const statics: (EntityPlacement & { yaw: number })[] = [];
@@ -88,7 +104,9 @@ if (app) {
     if (terrain.waterAt(Math.round(x), Math.round(z)) || placed.some((p) => Math.hypot(p.x - x, p.z - z) < 38)) continue;
     placed.push({ x, z });
     const t = trees[Math.floor(rng() * trees.length)];
-    statics.push({ model: t.entity.model, x: Math.round(x), y: ground(x, z) + 1, z: Math.round(z), yaw: rng() * Math.PI * 2, base: t.base });
+    // ?upscale: every other tree is the coarse copy of the same model (same anchor, same base).
+    const model = upscale && statics.length % 2 === 1 ? upscale.coarse.get(t.entity.model)! : t.entity.model;
+    statics.push({ model, x: Math.round(x), y: ground(x, z) + 1, z: Math.round(z), yaw: rng() * Math.PI * 2, base: t.base });
   }
   if (STAMP) {
     // The old way, for comparison: every tree written into the world, turned in 90° steps. It
@@ -98,13 +116,19 @@ if (app) {
         blitModelToBricks(renderer, s.model, { x: s.x, y: s.y, z: s.z }, s.base, Math.floor((s.yaw / (Math.PI / 2)) % 4) as Orientation);
       }
     });
-  } else {
-    // Uploading the models (the engine's "upload") blocks, so its row is painted first; indexing
-    // the instances ("placement") runs on the worker.
+  } else if (UPSCALED) {
+    // No worker: the models upload in setStatic (a blocking step, shown a frame first), then the
+    // commit places them.
     await step(load, STEPS.upload.phase, () => layer.setStatic(statics));
+    layer.commit();
+  } else {
+    // Encoding the models (the engine's "upload") and indexing the instances ("placement") run on
+    // the worker; the main thread only adds the encoded models.
+    layer.setStatic(statics);
     await commitStatic(layer);
   }
-  placement?.destroy();
+  // Not awaited: destroying lets the worker finish its cache writes while the page runs.
+  void worker?.destroy();
 
   // Rats wander between the trees.
   interface Rat extends CrowdMember { speed: number; turn: number; timer: number; }
@@ -169,6 +193,7 @@ if (app) {
   }, true);
   observeResize(canvas, loop);
   screen.ready();
+  markFrames(load, renderer);
   void reportLoadTimeline(load, { perf: params.has("perf"), overlay: perf });
   setInterval(() => {
     const now = performance.now(), secs = (now - acc.t) / 1000, st = renderer.instanceStats();
@@ -177,4 +202,43 @@ if (app) {
     Object.assign(acc, { frames: 0, ms: 0, t: now });
   }, 1000);
   if (params.has("e2e")) Object.assign(window, { instancesStats: () => ({ ...renderer.instanceStats(), rats: members.length, trees: statics.length, first: { x: members[0]?.x, z: members[0]?.z, yaw: members[0]?.yaw } }) });
+}
+
+/**
+ * ?upscale=k, a check page for the renderer's scaled models, not the pattern apps should copy.
+ *
+ * For each tree model, a copy k times coarser: size ceil(size / k), and coarse voxel c takes the
+ * fine voxel at min(size - 1, c·k + floor(k/2)) per axis (the middle of the k³ cells it will
+ * cover). Its anchor is the fine model's, unchanged: a scaled instance's anchor is in the enlarged
+ * model's voxels, which are the fine model's. The six trees are small, so this takes a few ms.
+ *
+ * And an instance target for the layer, a Proxy over the renderer: `addModel` passes the coarse
+ * copies' scale (looked up by their voxel array; everything else gets scale 1, the rats
+ * included), and `addEncodedModel` reads as absent so nothing expects a worker's encoding. The
+ * layer's own `EntityPlacement.scale` is deliberately not used here: this checks the renderer's
+ * scaled drawing on its own, with nothing of the engine in between.
+ */
+function upscaleCheck(renderer: Renderer, trees: readonly { entity: Entity }[], k: number): { coarse: Map<EntityModel, EntityModel>; target: InstanceTarget } {
+  const scaleOf = new WeakMap<object, number>();
+  const coarse = new Map<EntityModel, EntityModel>();
+  for (const { entity } of trees) {
+    const fine = entity.model;
+    const size = { x: Math.ceil(fine.size.x / k), y: Math.ceil(fine.size.y / k), z: Math.ceil(fine.size.z / k) };
+    const data = new Uint8Array(size.x * size.y * size.z);
+    const at = (c: number, n: number) => Math.min(n - 1, c * k + Math.floor(k / 2));
+    for (let z = 0; z < size.z; z++)
+      for (let y = 0; y < size.y; y++)
+        for (let x = 0; x < size.x; x++) data[x + y * size.x + z * size.x * size.y] = modelAt(fine, at(x, fine.size.x), at(y, fine.size.y), at(z, fine.size.z));
+    scaleOf.set(data, k);
+    coarse.set(fine, { size, data, anchor: { ...fine.anchor }, roles: fine.roles });
+  }
+  const target = new Proxy(renderer, {
+    get(r, key) {
+      if (key === "addEncodedModel") return undefined;
+      if (key === "addModel") return (src: Parameters<InstanceTarget["addModel"]>[0]) => r.addModel(src, { scale: scaleOf.get((src.data ?? src.sparse)!) });
+      const v = Reflect.get(r, key, r);
+      return typeof v === "function" ? v.bind(r) : v;
+    },
+  }) as InstanceTarget;
+  return { coarse, target };
 }

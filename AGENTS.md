@@ -28,26 +28,77 @@ Siblings needed: renderer, engine, generators.
 - `src/shared/loading-screen.ts`: `showLoadingScreen(load, { title, blurb, steps })`: the
   full-canvas overlay until `ready()`, then a corner pill while listed steps still stream;
   `fail(err)` shows an error. **Each page lists its own steps** in its `main.ts` (`{ phase,
-  label, background? }`, in the order shown; `STEPS` holds the shared phases' defaults): to
+  label, background?, count? }`, in the order shown; `count: false` hides the `done/total`; `STEPS` holds the shared phases' defaults): to
   show a new phase, add an entry there; unlisted phases stay off the screen but on the tracker.
   `background: true` steps don't count towards the overall bar and go to the pill after
   `ready()`. `screen.setSteps` changes the list when it depends on the GPU (valley's rats). No
   `visibility` in its CSS (the smoke hides overlays with it).
 - `src/shared/loading.ts`: `nextFrame` (resolves after the paint), `step(load, phase, fn)`
   (an app phase shown a frame before a blocking step), `prepared(renderer.prepare(...))` (awaits
-  the pipeline compile; a failed one is left to the first frame), and `reportLoadTimeline`
-  (`window.loadTimeline`; under `?perf` the timeline in the console).
+  the pipeline compile; a failed one is left to the first frame), `markFrames(load, renderer)`
+  (called beside `screen.ready()`: marks `first-frame`, then `converged` the first time
+  `renderer.converging()` reads false) and `reportLoadTimeline` (`window.loadTimeline` and
+  `window.loadOrigin` for the bench once the load is idle, `window.loadMarks` at once; under
+  `?perf` the timeline in the console).
+- `src/shared/offline.ts`: `offline()` registers the service worker (`registerServiceWorker` from
+  `@voxolith/engine/pwa`), from `boot()` and the landing page. `vite.config.ts` emits it
+  (`serviceWorker` from `@voxolith/engine/vite`, build only): every page and chunk is precached,
+  `models/` is cached on use, and a public file a page fetches goes in its `include` list. It
+  never registers on a dev server or on localhost / 127.0.0.1, so smoke and the benches never
+  see it.
 - **Pipelines:** every page creates its renderer with `deferPipelines: true` and awaits
   `prepared(renderer.prepare(needs))` before its first frame, so the `pipelines` step is the real
   compile. Pass `instances` / `parts` explicitly when the instances are not placed yet (the
   defaults read the current state); world gates its loop until the compile is done, since its
   loop starts before the models are generated.
-- `src/shared/placement.ts` + `placement.worker.ts`: the page's placement worker
-  (`placementWorker()`) and `commitStatic(layer)` (`layer.commitAsync()`, falling back to a
-  synchronous `commit()`). valley, nightwood and instances bake their static scenery there; the
-  upload in `setStatic` stays on the main thread, behind `step(load, STEPS.upload.phase, ...)` so
-  its row is painted first. The bench keeps the synchronous `commit()`, so its `loadMs.place`
-  stays the renderer's own placement cost.
+- `src/shared/placement.ts` + `placement.worker.ts`: the page's scene worker (`sceneWorker()`,
+  engine `makeSceneWorker` / `serveScene`) and `commitStatic(layer)` (`layer.commitAsync()`,
+  falling back to a synchronous `commit()`). valley, nightwood and instances pass it as
+  `makeInstanceLayer(renderer, { load, worker })`: `setStatic` only sends the models to be
+  encoded, and the commit reserves the pools once, adds the models a few per frame and bakes, so
+  neither upload nor placement blocks the main thread. Their upload row is `STEPS.encodedUpload`
+  (`count: false`: the engine counts it in bricks, millions at 100 vox/m, so only the bar shows).
+  valley streams its ground while the encodes run, rather than after them: measured, awaiting the
+  uploads first gave the same first frame and a 220-240 ms task after it at 100 vox/m. The bench
+  keeps the synchronous `setStatic` + `commit()`, so its `loadMs.place` stays the renderer's own
+  placement cost.
+- **Scene cache.** In production builds the scene worker keeps encodings and bakes in IndexedDB
+  (`serveScene({ cache: { name: "voxolith-scene", maxBytes } })`, salted by its hashed URL; off
+  in dev, like the model cache). It is capped at 2.5 GiB and the model cache
+  (`world/gen.worker.ts`, `voxolith-models`) at 256 MiB, least recently used out first: sized so
+  every page at every scale fits with a margin, from the per-page sizes in each worker file.
+  valley and nightwood pass `modelKey: workers.modelKey` (every static model comes from the pool),
+  so a warm visit never sends a model's bricks; instances grows its trees on the main thread and
+  passes `hashModels: true` instead (a key of params and seed would survive a generator code
+  change). The pages call
+  `void worker.destroy()` (valley and nightwood after the fine swap), so nothing waits for the
+  writes. A counted row shows
+  `n cached`; a `count: false` row shows `cached` or `30% cached`.
+- `src/shared/detail.ts`: coarse first, one swap (valley and nightwood at 50 and 100 vox/m).
+  `coarseFactor(vpm, params)` (5 or 10; 1 at 20 or with `?coarse=0`), `stagedLoad(load)` (a
+  tracker for the pool and the layer that files the fine stage's `models`, `upload` and
+  `placement` under `fine.*`), `COARSE_STEPS` / `FINE_STEPS` (the rows; the fine ones are
+  background rows for the corner pill) and `swapToFine` (`setStatic` + `commitStatic` in one task,
+  then the `fine` mark). The pages ask for the 10 vox/m set and the fine set at once on one pool,
+  place the coarse set with `scale: KC`, show the page at the coarse scene plus the ground within
+  `?near=` metres (`world.readyAround`, plus half a chunk's diagonal), and swap once the fine set
+  is generated and the unscaled pipeline compiled. Both stages pass `modelKey`, so a warm visit
+  reads both from the scene cache.
+- `src/shared/ground.ts` + `ground.worker.ts`: the streamed ground filled on workers
+  (engine `makeChunkFillPool` / `serveChunks`, `makeChunkedWorld({ fill, boxes })`): `groundFill(init)`
+  with a `GroundInit` (gen-terrain `fineTerrainInit` for valley and nightwood, `terrainInit` plus
+  `topOverrideData` for world), `groundWorkers()` (cores less six, 1 to 6: the generator pool
+  takes four, the scene worker one; 6 measured best on valley 100) and `buildAround(world, x, z, r, budgetMs)`, the loading
+  screen's wait (a 40 ms `step` budget there; the frame loops use 8). The description is taken
+  when the pool is made, so level and settle the top override first. `generate` still runs per
+  applied chunk (valley's `built` counter, world's model blits). nightwood destroys its pool once
+  its reach is built, world once the whole valley is.
+- `src/shared/terrain.ts` + `terrain.worker.ts`: `terrainOffThread(params, seed)`, a terrain
+  whose height map is sampled on up to six workers in bands of rows (gen-terrain `terrainHeight`
+  is pure per column; the worker bundles gen-terrain only) and rebuilt here from the heights
+  (`generateTerrain(params, seed, { heights })`); falls back to this thread. valley and world use
+  it; valley overlaps it with the model requests and the renderer (the palette takes the
+  terrain's roles from `buildRoles`, which need no heights).
 - `src/shared/scale.ts`: the voxel scale of `valley` and `nightwood`: `isPhone` (the phone
   profile test), `pickScale` (`?vpm=` snapped to 20, 50 or 100; default 50, 20 on a phone; the
   HUD's scale button steps between the default and one scale finer).

@@ -5,7 +5,7 @@
 import { createRenderer, OccupancyGrid, makeCamera, parseVox, resizeToDisplay } from "@voxolith/renderer";
 import { trackRenderer } from "@voxolith/engine";
 import { boot, runLoop } from "../shared/boot";
-import { prepared, reportLoadTimeline, step } from "../shared/loading";
+import { markFrames, prepared, reportLoadTimeline, step } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
 import { STUDIO } from "../shared/env";
 import { modelToGrid, frameGrid } from "../shared/voxGrid";
@@ -50,5 +50,6 @@ if (app) {
     renderer.render({ ...camera(now / 50), ...STUDIO });
   });
   screen.ready();
+  markFrames(load, renderer);
   void reportLoadTimeline(load, { perf: false });
 }

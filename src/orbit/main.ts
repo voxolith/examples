@@ -6,7 +6,7 @@ import { createRenderer, OccupancyGrid, makeCamera, observeResize, resizeToDispl
 import { createInput, makeOrbitController, prepareSurface } from "@voxolith/engine/input";
 import { trackRenderer } from "@voxolith/engine";
 import { boot, runLoop } from "../shared/boot";
-import { prepared, reportLoadTimeline } from "../shared/loading";
+import { markFrames, prepared, reportLoadTimeline } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
 import { DAYLIGHT } from "../shared/env";
 
@@ -69,5 +69,6 @@ if (app) {
   });
   loop.invalidate();
   screen.ready();
+  markFrames(load, renderer);
   void reportLoadTimeline(load, { perf: false });
 }

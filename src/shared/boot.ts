@@ -14,6 +14,7 @@ import {
   type GpuContext,
 } from "@voxolith/renderer";
 import { makeLoadTracker, type LoadTracker } from "@voxolith/engine";
+import { offline } from "./offline";
 import "./styles.css";
 import { NO_SCREEN, showLoadingScreen, type LoadingScreen, type LoadingStep } from "./loading-screen";
 import { initTheme } from "../brand/theme";
@@ -53,6 +54,7 @@ export type BootOptions =
  * ```
  */
 export async function boot(appName: string, opts: BootOptions): Promise<Booted | null> {
+  offline();
   const canvas = document.getElementById("scene") as HTMLCanvasElement | null;
   const info = document.getElementById("info");
   if (!canvas || !info) throw new Error("Missing #scene / #info");

@@ -15,9 +15,14 @@
 // touch-only pointer, or storage bindings under 512 MiB); the HUD's button reloads one scale finer
 // (100 or 50), or back. They are made on workers (the world page's generator worker, with its model
 // cache in production builds) and drawn as instances; the ground is refined per brick column
-// around the clearing. Phones also get fewer fireflies and a lighter preset. Every length is in
-// metres, so the scene is the same at every scale. URL options:
-//   ?vpm=20|50|100 (default 50, 20 on a phone; anything else snaps to the nearest), ?fireflies=
+// around the clearing, its chunks filled on workers (../shared/ground.ts). At 50 and 100 the page shows the wood first with every model built at 10
+// vox/m and drawn 5 or 10 times enlarged, then generates the fine models in the background and
+// swaps them in at once (../shared/detail.ts); the first picture waits only for the ground within
+// 8 m. Phones also get fewer fireflies and a lighter preset. Every length is in metres, so the
+// scene is the same at every scale. URL options:
+//   ?vpm=20|50|100 (default 50, 20 on a phone; anything else snaps to the nearest), ?coarse=0 (no
+//   coarse stage: the fine models before the first picture), ?near= (metres of ground the first
+//   picture waits for, default 8), ?fireflies=
 //   (up to 28), ?seed=, ?full (desktop settings on a phone),
 //   ?weather= (any ATMOSPHERES name, default fog; clear for no mist), ?mist= (its thickness,
 //   default 0.8), ?view= (the view distance in metres, default 24), ?trees=, ?shrubs=, ?plants=
@@ -26,19 +31,22 @@
 
 import { createRenderer, firstPersonFrame, makePerf, observeResize, QUALITY_PRESETS, resizeToDisplay, type PointLight, type Renderer, type Vec3 } from "@voxolith/renderer";
 import { hashSeed, seededRandom } from "@voxolith/renderer/core";
-import { makeChunkedWorld, makeInstanceLayer, PaletteAllocator, trackRenderer, type Entity, type RGB } from "@voxolith/engine";
-import { makeGeneratorPool } from "@voxolith/engine/worker";
+import { columnBoxes, makeChunkedWorld, makeInstanceLayer, PaletteAllocator, trackRenderer, type Entity, type RGB } from "@voxolith/engine";
+import { makeGeneratorPool, type GeneratorPool } from "@voxolith/engine/worker";
 import { createInput, makeLookController, prepareSurface } from "@voxolith/engine/input";
 import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
-import { generateTerrain, refineTerrain } from "@voxolith/gen-terrain";
+import { buildRoles, fineTerrainInit, refineTerrain, type TerrainParams } from "@voxolith/gen-terrain";
 import { PRESETS as TREES } from "@voxolith/gen-tree";
 import { PRESETS as BUSHES } from "@voxolith/gen-bush";
 import { PRESETS as GRASSES } from "@voxolith/gen-grass";
 import { PRESETS as BUILDINGS } from "@voxolith/gen-building";
 import { boot, runLoop } from "../shared/boot";
-import { nextFrame, prepared, reportLoadTimeline, step } from "../shared/loading";
-import { commitStatic, placementWorker } from "../shared/placement";
+import { markFrames, prepared, reportLoadTimeline } from "../shared/loading";
+import { buildAround, groundFill } from "../shared/ground";
+import { terrainOffThread } from "../shared/terrain";
+import { commitStatic, sceneWorker } from "../shared/placement";
 import { STEPS } from "../shared/loading-screen";
+import { COARSE_STEPS, COARSE_VPM, coarseFactor, FINE_STEPS, stagedLoad, swapToFine } from "../shared/detail";
 import { isPhone, pickScale, voxelSize } from "../shared/scale";
 
 const params = new URLSearchParams(location.search);
@@ -46,19 +54,20 @@ const seed = hashSeed(params.get("seed") ?? "nightwood");
 const num = (key: string, fallback: number) => (params.has(key) ? Number(params.get(key)) : fallback);
 
 // The loading screen's rows, in this order (phases not listed are not shown, but stay on the
-// tracker for window.loadTimeline and ?perf).
-const app = await boot("nightwood", {
-  blurb: "A forest clearing at night",
-  steps: [
-    STEPS.device,
-    STEPS.models,
-    STEPS.shaders,
-    STEPS.pipelines,
-    STEPS.upload,
-    STEPS.placement,
-    STEPS.ground,
-  ],
-});
+// tracker for window.loadTimeline and ?perf). At 50 and 100 vox/m the rows before the first
+// picture are the coarse stage's, and the fine stage streams on in the corner pill; the list is
+// set once the scale is known (it depends on the GPU: a phone gets 20).
+const loadingSteps = (coarse: boolean) => [
+  STEPS.device,
+  coarse ? COARSE_STEPS.models : STEPS.models,
+  STEPS.shaders,
+  STEPS.pipelines,
+  coarse ? COARSE_STEPS.upload : STEPS.encodedUpload,
+  STEPS.placement,
+  { ...STEPS.ground, background: true },
+  ...(coarse ? FINE_STEPS : []),
+];
+const app = await boot("nightwood", { blurb: "A forest clearing at night", steps: loadingSteps(false) });
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
   // One tracker for the whole load (boot's: workers, renderer, instance layer, ground); the
@@ -73,6 +82,9 @@ if (app) {
   /** Metres to voxels at this resolution. */
   const m = (metres: number) => metres * VPM;
   const K = VPM / 10;
+  /** The coarse stage's factor: its models are built at 10 vox/m and drawn KC times enlarged (1: no coarse stage, at 20). */
+  const KC = coarseFactor(VPM, params);
+  if (KC > 1) screen.setSteps(loadingSteps(true));
   // Density knobs, 0-1 (for measuring what the scene costs): ?trees=, ?shrubs=, ?plants=.
   const DENSITY = { trees: num("trees", 1), shrubs: num("shrubs", 1), plants: num("plants", 1) };
   const FIXED_SCALE = num("renderScale", 0);
@@ -80,16 +92,20 @@ if (app) {
   const MIST = Math.max(0, num("mist", 0.8));
   /** View distance, metres: the fog wall, and how far any ray goes. */
   const VIEW = Math.max(8, Math.min(40, num("view", 24)));
+  /**
+   * Metres of ground around the camera built before the first picture (?near=). The camera stands
+   * still and the fog and the undergrowth hide the rest, so this is what the first view needs
+   * (checked with streaming stopped at the first picture: 6 m leaves holes in the fog at 100
+   * vox/m, 8 m none); the rest of the reach streams in after it.
+   */
+  const NEAR_M = 8;
   const FIREFLIES = Math.max(0, Math.min(28, num("fireflies", phone ? 12 : 24)));
 
   // --- the design, at 10 voxels per metre ------------------------------------------------------
   // A 60 m square of gently rolling forest floor, no water, 24 m of air for the tallest spruce; the
   // clearing in the middle.
   const COARSE = { x: 600, y: 240, z: 600 };
-  const terrain = generateTerrain(
-    { width: COARSE.x, depth: COARSE.z, height: COARSE.y, baseY: 30, relief: 5, featureSize: 220, waterLevel: 0, river: { enabled: false, width: 0, depth: 0, banks: 0, meander: 100 } },
-    seed,
-  );
+  const TERRAIN: Partial<TerrainParams> = { width: COARSE.x, depth: COARSE.z, height: COARSE.y, baseY: 30, relief: 5, featureSize: 220, waterLevel: 0, river: { enabled: false, width: 0, depth: 0, banks: 0, meander: 100 } };
   const SIZE = { x: COARSE.x * K, y: COARSE.y * K, z: COARSE.z * K };
   const C: [number, number] = [SIZE.x / 2, SIZE.z / 2];
   // The cottage stands 17 m out, seen through a gap in the trees.
@@ -124,21 +140,34 @@ if (app) {
   };
   const all = [...KINDS.trees, ...KINDS.bushes, ...KINDS.ground, KINDS.house];
 
-  const fine = new Map<string, Entity>();
-  {
-    const workers = makeGeneratorPool({ spawn: () => new Worker(new URL("../world/gen.worker.ts", import.meta.url), { type: "module" }), load });
-    await workers.ready();
-    const out = await workers.generateMany(
-      all.map((k) => ({ generator: k.generator, params: k.params, seed: k.seed, entityId: k.key, ctx: { voxelsPerMetre: VPM } })),
-    );
-    // Not awaited: it only lets the workers finish their cache writes.
-    void workers.destroy();
-    all.forEach((k, i) => fine.set(k.key, out[i]));
-  }
+  // Coarse first (at 50 and 100): the 10 vox/m models, which the generators make in a fraction of
+  // the time, drawn KC times enlarged; the fine ones are generated after them on the same workers
+  // and swapped in once encoded and baked (../shared/detail.ts). At 20 the fine models come first.
+  const staged = stagedLoad(load);
+  const workers = makeGeneratorPool({ spawn: () => new Worker(new URL("../world/gen.worker.ts", import.meta.url), { type: "module" }), load: staged.tracker });
+  /** What produced each model (the pool's key): the scene worker's cache keeps its encoding under it. */
+  const modelKey: GeneratorPool["modelKey"] = workers.modelKey;
+  const specs = (vpm: number) => all.map((k) => ({ generator: k.generator, params: k.params, seed: k.seed, entityId: k.key, ctx: { voxelsPerMetre: vpm } }));
+  const byKey = (out: Entity[]) => new Map(all.map((k, i) => [k.key, out[i]]));
+  // Both sets are asked for now, so the workers start at once (the renderer and the ground are set
+  // up while they generate); the fine set queues behind the coarse one, so the workers take it up
+  // while the coarse scene is uploaded and placed.
+  const firstSet = workers.generateMany(specs(KC > 1 ? COARSE_VPM : VPM)).then(byKey);
+  if (KC > 1) staged.fine("models");
+  const fine = KC > 1 ? workers.generateMany(specs(VPM)).then(byKey) : undefined;
+  // Not awaited: destroying lets the workers finish their cache writes.
+  void (fine ?? firstSet).finally(() => void workers.destroy()).catch(() => {});
+
+  // --- the terrain, on workers ---------------------------------------------------------------------
+  // Its height map (about 90 ms here) is sampled on workers (../shared/terrain.ts, falling back to
+  // this thread) while the models generate and the renderer is made; only the ground waits for it.
+  const terrainTask = load.task("terrain");
+  const shaped = terrainOffThread(TERRAIN, seed).finally(() => terrainTask.end());
 
   // --- renderer ------------------------------------------------------------------------------------
   const palette = new PaletteAllocator(1);
-  const { base: groundBase } = palette.allocate(terrain.roles, "terrain");
+  // The terrain's roles depend only on its colours (the defaults), so the palette need not wait for its heights.
+  const { base: groundBase } = palette.allocate(buildRoles(), "terrain");
   const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   const quality = gpu.software ? "low" : phone ? "medium" : "high";
@@ -147,24 +176,50 @@ if (app) {
   if (gpu.software) gpu.renderScale = Math.min(gpu.renderScale, 0.3);
   else if (phone) gpu.renderScale = Math.min(gpu.renderScale, 0.6);
   // deferPipelines above: compile what the frames use (instances: the wood is not placed yet)
-  // while the wood is placed and the ground built, and await it before the first frame.
-  const compiled = prepared(renderer.prepare({ instances: true }));
+  // while the wood is placed and the ground built, and await it before the first frame. The coarse
+  // stage draws scaled models, a pipeline variant of its own; the unscaled one is compiled
+  // alongside and awaited before the swap, so neither compiles on a frame.
+  const compiled = prepared(renderer.prepare({ instances: true, scaled: KC > 1 }));
+  const compiledFine = KC > 1 ? prepared(renderer.prepare({ instances: true })) : compiled;
 
-  const ground = refineTerrain(terrain, K, { seed });
+  const ground = refineTerrain(await shaped, K, { seed });
   const floor = (x: number, z: number) => ground.heightAt(Math.max(0, Math.min(SIZE.x - 1, x)), Math.max(0, Math.min(SIZE.z - 1, z)));
-  // The wood's static set is baked on a worker (commitAsync below), so the page keeps painting.
-  const placement = placementWorker();
-  const layer = makeInstanceLayer(renderer, { load, placement });
+
+  // --- the ground, around the clearing as far as the fog reaches -------------------------------
+  // Its bricks are filled on workers (../shared/ground.ts); this thread only copies them in, a box
+  // per 8x8 brick column sized to what the column holds.
+  const CHUNK = 256;
+  const fill = groundFill({ fine: fineTerrainInit(ground), base: groundBase });
+  const world = makeChunkedWorld({
+    target: renderer,
+    size: SIZE,
+    chunk: CHUNK,
+    seed,
+    load,
+    fill,
+    boxes: ({ box }) => columnBoxes(box, (ox, oz) => ground.columnSpan(ox, oz)),
+  });
+  const REACH = m(32);
+  // Focused now, so the ground workers fill it while the models are generated and placed.
+  world.focus(C[0], C[1], REACH, REACH * 1.2);
+
+  // --- the models, first stage ---------------------------------------------------------------------
+  const first = await firstSet;
+  // The wood's models are encoded and its static set baked on a worker (commitAsync below), so
+  // the page keeps painting.
+  const worker = sceneWorker();
+  const layer = makeInstanceLayer(renderer, { load: staged.tracker, worker, modelKey });
   // A darker, cooler night skin for the foliage: the moon does not show greens as the sun does.
   const night = (c: RGB): RGB => [c[0] * 0.8, c[1] * 0.85, c[2] * 0.95];
-  const baseOf = (key: string) => layer.palettes.of(key, fine.get(key)!.model.roles, key === "house" ? undefined : night);
+  // Every scale of a model has the same roles, so the coarse and fine sets share the palettes.
+  const baseOf = (key: string) => layer.palettes.of(key, first.get(key)!.model.roles, key === "house" ? undefined : night);
 
   // --- the wood ----------------------------------------------------------------------------------
+  // Sites first (by kind), then the placements of either stage's models on them.
   const rng = seededRandom(seed ^ 0x77);
-  const statics: { model: Entity["model"]; x: number; y: number; z: number; yaw: number; base: number }[] = [];
+  const sites: { key: string; x: number; y: number; z: number; yaw: number; base: number }[] = [];
   const place = (key: string, x: number, z: number) => {
-    const e = fine.get(key)!;
-    statics.push({ model: e.model, x: Math.round(x), y: floor(x, z) + 1, z: Math.round(z), yaw: rng() * Math.PI * 2, base: baseOf(key) });
+    sites.push({ key, x: Math.round(x), y: floor(x, z) + 1, z: Math.round(z), yaw: rng() * Math.PI * 2, base: baseOf(key) });
   };
   const angle = (x: number, z: number) => Math.atan2(x - C[0], z - C[1]);
   const inGap = (x: number, z: number) => {
@@ -200,38 +255,22 @@ if (app) {
     plants++;
   }
   // The cottage, its front towards the clearing.
-  const house = fine.get("house")!;
-  statics.push({ model: house.model, x: Math.round(H[0]), y: floor(H[0], H[1]) + 1, z: Math.round(H[1]), yaw: HOUSE_DIR + Math.PI, base: baseOf("house") });
-  // Uploading the models (the engine's "upload") blocks the main thread, so its row is opened and
-  // painted first. Indexing the instances ("placement") runs on the worker while the ground is
-  // built below; the first frame waits for both.
-  await step(load, STEPS.upload.phase, () => layer.setStatic(statics));
-  const placed = commitStatic(layer).finally(() => placement.destroy());
+  sites.push({ key: "house", x: Math.round(H[0]), y: floor(H[0], H[1]) + 1, z: Math.round(H[1]), yaw: HOUSE_DIR + Math.PI, base: baseOf("house") });
+  /** The static set for one stage's models, drawn `scale` times enlarged. */
+  const statics = (models: Map<string, Entity>, scale: number) => sites.map(({ key, ...s }) => ({ ...s, model: models.get(key)!.model, scale }));
+  // Encoding the models (the engine's "upload") and indexing the instances ("placement") run on
+  // the worker while the ground is built below; the main thread only adds the encoded models, a
+  // few per frame. The first frame waits for both.
+  layer.setStatic(statics(first, KC));
+  const placed = commitStatic(layer);
 
-  // --- the ground, around the clearing as far as the fog reaches -------------------------------
-  const CHUNK = 256;
-  const world = makeChunkedWorld({
-    target: renderer,
-    size: SIZE,
-    chunk: CHUNK,
-    seed,
-    load,
-    generate(ctx) {
-      const boxes = [];
-      for (let oz = ctx.box.z0; oz <= ctx.box.z1; oz += 8)
-        for (let ox = ctx.box.x0; ox <= ctx.box.x1; ox += 8) {
-          const [y0, y1] = ground.columnSpan(ox, oz);
-          boxes.push({ x0: ox, y0, z0: oz, x1: ox + 7, y1, z1: oz + 7 });
-        }
-      renderer.editMany(boxes, (cells, ox, oy, oz) => ground.fillBrick(cells, ox, oy, oz, groundBase));
-    },
-  });
-  const REACH = m(32);
-  world.focus(C[0], C[1], REACH, REACH * 1.2);
-  while (world.pending) {
-    world.step(40);
-    await nextFrame();
-  }
+  // The first picture waits for the ground within NEAR of the camera (nearest first), not the
+  // whole reach; the rest is built in the frame loop, in the corner pill's "Building the ground".
+  // readyAround tests chunk centres, so half a chunk's diagonal more takes every chunk that
+  // reaches into the disc; never more than the focus queues, or it would wait forever.
+  // Behind the loading screen the main thread has nothing better to do than copy chunks in.
+  const NEAR = Math.min(REACH, m(Math.max(0, Math.min(VIEW, num("near", NEAR_M)))) + CHUNK * Math.SQRT1_2);
+  await buildAround(world, C[0], C[1], NEAR, 40);
   await Promise.all([placed, compiled]);
 
   // --- lights --------------------------------------------------------------------------------------
@@ -298,6 +337,9 @@ if (app) {
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
     look.update(dt);
+    // Frame-safe: a chunk takes about 10 ms to copy in at 100 vox/m, and at least one is applied.
+    // The camera stands still, so once the reach is built the ground workers are done.
+    if (world.pending && world.step(8) === 0) fill.destroy();
     const t = (now - t0) / 1000;
     renderer.setLights(lights(t));
     perf.frame(now);
@@ -307,9 +349,24 @@ if (app) {
   }, true);
   observeResize(canvas, loop);
   screen.ready();
+  markFrames(load, renderer);
   info.textContent =
     `${VPM} voxels/m${phone ? " (phone settings; ?full for all)" : ""} · ${trees} trees, ${shrubs} shrubs, ${plants} plants, ${FIREFLIES} fireflies · ` +
     "drag or click to look around (Q/E/R/F)";
   void reportLoadTimeline(load, { perf: params.has("perf"), overlay: perf });
-  if (params.has("e2e")) Object.assign(window, { nightwood: { look: () => [look.yaw(), look.pitch()], flies: () => lights((performance.now() - t0) / 1000).length } });
+
+  // --- the fine set, swapped in -------------------------------------------------------------------
+  // It draws the coarse set until the fine bake applies; then the coarse models are released.
+  let detail = !fine;
+  if (fine) {
+    void (async () => {
+      const models = await fine;
+      await compiledFine;
+      await swapToFine(staged, layer, statics(models, 1));
+      detail = true;
+    })()
+      .catch((err) => screen.fail(err))
+      .finally(() => void worker.destroy());
+  } else void placed.finally(() => void worker.destroy());
+  if (params.has("e2e")) Object.assign(window, { nightwood: { look: () => [look.yaw(), look.pitch()], flies: () => lights((performance.now() - t0) / 1000).length, detail: () => detail, pending: () => world.pending } });
 }

@@ -2,6 +2,7 @@
 // forced (the <picture> media query only follows the OS preference).
 import "./shared/styles.css";
 import { initTheme, currentTheme } from "./brand/theme";
+import { offline } from "./shared/offline";
 
 const toggle = document.getElementById("theme-toggle");
 const img = document.querySelector<HTMLImageElement>(".lockup img");
@@ -15,3 +16,4 @@ const sync = () => {
 initTheme(toggle);
 toggle?.addEventListener("click", sync);
 sync();
+offline();

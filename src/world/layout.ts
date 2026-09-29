@@ -10,7 +10,7 @@
 import { seededRandom } from "@voxolith/renderer/core";
 import { orientAnchor, orientedSize, orientVoxel, scatterRegion, type Entity, type Orientation, type Variant, type VariantPool } from "@voxolith/engine";
 import { makeNoise } from "@voxolith/gen-kit";
-import { generateTerrain, type Terrain } from "@voxolith/gen-terrain";
+import { generateTerrain, type Terrain, type TerrainParams } from "@voxolith/gen-terrain";
 import { generateTree, PRESETS as TREES } from "@voxolith/gen-tree";
 import { generateBush, PRESETS as BUSHES } from "@voxolith/gen-bush";
 import { generateGrass, PRESETS as GRASSES } from "@voxolith/gen-grass";
@@ -36,16 +36,22 @@ export const smooth = (a: number, b: number, x: number) => {
 
 export const villageRadius = (span: number) => Math.max(100, 70 * span);
 
+/**
+ * The valley's terrain params: the ground and the river for `span` x `span` tiles. Plain data, so
+ * a page can have the terrain generated on a worker (../shared/terrain.ts) and get the same
+ * `valleyTerrain`.
+ */
+export function valleyTerrainParams(span: number): Partial<TerrainParams> {
+  return {
+    width: TILE * span, depth: TILE * span, height: 192,
+    featureSize: 110 + 25 * span,
+    river: { enabled: true, width: 14 + 3 * span, depth: 5, banks: 16 + 2 * span, meander: 260 + 70 * span },
+  };
+}
+
 /** The ground and the river. The layout edits its heights (levelled pads). */
 export function valleyTerrain(span: number, seed: number): Terrain {
-  return generateTerrain(
-    {
-      width: TILE * span, depth: TILE * span, height: 192,
-      featureSize: 110 + 25 * span,
-      river: { enabled: true, width: 14 + 3 * span, depth: 5, banks: 16 + 2 * span, meander: 260 + 70 * span },
-    },
-    seed,
-  );
+  return generateTerrain(valleyTerrainParams(span), seed);
 }
 
 export interface Species {

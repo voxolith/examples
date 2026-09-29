@@ -46,7 +46,7 @@ import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosp
 import { generateTerrain } from "@voxolith/gen-terrain";
 import { generateCreature, PRESETS, ROLE } from "@voxolith/gen-creature";
 import { boot, runLoop } from "../shared/boot";
-import { prepared, reportLoadTimeline, step } from "../shared/loading";
+import { markFrames, prepared, reportLoadTimeline, step } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
 
 const params = new URLSearchParams(location.search);
@@ -361,6 +361,7 @@ if (app) {
   }, true);
   observeResize(canvas, loop);
   screen.ready();
+  markFrames(load, renderer);
   void reportLoadTimeline(load, { perf: params.has("perf"), overlay: perf });
 
   // For the end-to-end checks (tools/input-e2e.ts): where each rat is drawn, and what happened to it.
