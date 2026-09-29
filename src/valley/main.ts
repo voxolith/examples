@@ -13,7 +13,8 @@
 //     stand in the valley, at the layout's exact orientations;
 //   - at 50 and 100 the valley shows first with every model built at 10 voxels
 //     per metre and drawn 5 or 10 times enlarged; the fine models are generated
-//     in the background and swapped in at once (../shared/detail.ts);
+//     in the background and swapped in at once (../shared/detail.ts; on a
+//     desktop only, switched per device by COARSE_FIRST below);
 //   - the terrain is refined per brick (a smooth surface, grass blades,
 //     pebbles) and streamed in chunks around the view, since a 128 m valley
 //     of centimetre voxels does not fit in memory at once; its height map is
@@ -36,16 +37,17 @@
 //               elsewhere; ?rats=N forces a crowd of N at any scale, larger
 //               than life below 100, for testing), ?radius= the streamed
 //               radius in metres (default 24), ?near= the ground in metres
-//               the first picture waits for (default 18), ?coarse=0 no
-//               coarse stage (the fine models before the first picture),
+//               the first picture waits for (default 18), ?coarse=0|1 the
+//               coarse stage off, or on at any scale and on a phone
+//               (default on at 50 and 100 on a desktop),
 //               ?seed=, ?season=, ?time=night, ?weather=, ?rigged (rats posed
 //               on the GPU), ?perf (the overlay, and the load timeline in the
 //               console), ?full (desktop settings on a phone), ?e2e (hooks for
 //               the input tests).
 // A phone (a touch-only pointer, or storage bindings under 512 MiB) gets a
 // lighter profile: 20 voxels per metre, scale 2, one variant, 20 rats (at
-// 100 only), a 16 m radius and the Low preset; every option above still
-// applies on its own.
+// 100 only), a 16 m radius, the Low preset and no coarse stage; every
+// option above still applies on its own.
 // Drag the lamp (or double-tap), N for night, W for weather, as on the
 // world page.
 
@@ -95,6 +97,16 @@ const params = new URLSearchParams(location.search);
 const seed = hashSeed(params.get("seed") ?? "voxolith");
 const season = (params.get("season") ?? "summer") as Season;
 const num = (key: string, fallback: number) => (params.has(key) ? Number(params.get(key)) : fallback);
+
+/**
+ * Coarse first, one swap (../shared/detail.ts), per device. On: at 50 and 100 vox/m the first
+ * picture shows every model built at 10 vox/m and drawn enlarged, and the fine models are then
+ * generated, uploaded and baked in the background and swapped in at once. That is a second
+ * generation, upload and bake running while the user is already in the scene: on a desktop it
+ * buys a much earlier first picture, on a phone it lags the scene for longer than it saves, so
+ * phones load the fine models once, before the first picture. ?coarse=0 / ?coarse=1 override.
+ */
+const COARSE_FIRST = { desktop: true, phone: false };
 
 /**
  * The loading screen's rows, in this order (phases not listed are not shown, but stay on the
@@ -167,13 +179,13 @@ if (app) {
    * RADIUS streams in after it, nearest first.
    */
   const NEAR = Math.max(0, Math.min(RADIUS / VPM, num("near", NEAR_M))) * VPM;
-  /** The coarse stage's factor: models built at 10 vox/m drawn KC times enlarged (1: none, at 20). */
-  const KC = coarseFactor(VPM, params);
+  /** The coarse stage's factor: models built at 10 vox/m drawn KC times enlarged (1: none: at 20, on a phone, or ?coarse=0). */
+  const KC = coarseFactor(VPM, params, phone ? COARSE_FIRST.phone : COARSE_FIRST.desktop);
   if (RAT_COUNT || KC > 1) screen.setSteps(loadingSteps(RAT_COUNT > 0, KC > 1));
 
   // --- the models, on workers ------------------------------------------------------------
   // Asked for first, so the workers generate (or read their cache) while this thread shapes the
-  // terrain. Coarse first (at 50 and 100): every species at 10 vox/m, drawn KC times enlarged,
+  // terrain. Coarse first (at 50 and 100 on a desktop): every species at 10 vox/m, drawn KC times enlarged,
   // then the fine ones on the same workers, swapped in once encoded and baked
   // (../shared/detail.ts). At 20 the fine models come first; only the houses are asked for at 10
   // too, since the layout measures them (footprint, door) at its own scale. The pool's phases are

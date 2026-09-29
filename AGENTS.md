@@ -71,11 +71,15 @@ Siblings needed: renderer, engine, generators.
   so a warm visit never sends a model's bricks; instances grows its trees on the main thread and
   passes `hashModels: true` instead (a key of params and seed would survive a generator code
   change). The pages call
-  `void worker.destroy()` (valley and nightwood after the fine swap), so nothing waits for the
+  `void worker.destroy()` (valley and nightwood after the fine swap, or the first placement), so nothing waits for the
   writes. A counted row shows
   `n cached`; a `count: false` row shows `cached` or `30% cached`.
-- `src/shared/detail.ts`: coarse first, one swap (valley and nightwood at 50 and 100 vox/m).
-  `coarseFactor(vpm, params)` (5 or 10; 1 at 20 or with `?coarse=0`), `stagedLoad(load)` (a
+- `src/shared/detail.ts`: coarse first, one swap (valley and nightwood at 50 and 100 vox/m, on a
+  desktop). Opt-in, the piece an app would copy: each page decides with its `COARSE_FIRST =
+  { desktop: true, phone: false }` switch (the fine stage is a second generation, upload and bake
+  while the user is in the scene, which lags a phone), and with a factor of 1 nothing else in the
+  module runs. `coarseFactor(vpm, params, enabled)` (5 or 10; 1 when not enabled, at 20, or with
+  `?coarse=0`; `?coarse=1` forces it, at 20 too with factor 2), `stagedLoad(load)` (a
   tracker for the pool and the layer that files the fine stage's `models`, `upload` and
   `placement` under `fine.*`), `COARSE_STEPS` / `FINE_STEPS` (the rows; the fine ones are
   background rows for the corner pill) and `swapToFine` (`setStatic` + `commitStatic` in one task,

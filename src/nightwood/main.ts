@@ -15,13 +15,14 @@
 // touch-only pointer, or storage bindings under 512 MiB); the HUD's button reloads one scale finer
 // (100 or 50), or back. They are made on workers (the world page's generator worker, with its model
 // cache in production builds) and drawn as instances; the ground is refined per brick column
-// around the clearing, its chunks filled on workers (../shared/ground.ts). At 50 and 100 the page shows the wood first with every model built at 10
-// vox/m and drawn 5 or 10 times enlarged, then generates the fine models in the background and
-// swaps them in at once (../shared/detail.ts); the first picture waits only for the ground within
-// 8 m. Phones also get fewer fireflies and a lighter preset. Every length is in metres, so the
+// around the clearing, its chunks filled on workers (../shared/ground.ts). At 50 and 100 on a
+// desktop the page shows the wood first with every model built at 10 vox/m and drawn 5 or 10
+// times enlarged, then generates the fine models in the background and swaps them in at once
+// (../shared/detail.ts, switched per device by COARSE_FIRST below: phones load in one stage); the
+// first picture waits only for the ground within 8 m. Phones also get fewer fireflies and a lighter preset. Every length is in metres, so the
 // scene is the same at every scale. URL options:
-//   ?vpm=20|50|100 (default 50, 20 on a phone; anything else snaps to the nearest), ?coarse=0 (no
-//   coarse stage: the fine models before the first picture), ?near= (metres of ground the first
+//   ?vpm=20|50|100 (default 50, 20 on a phone; anything else snaps to the nearest), ?coarse=0|1 (the
+//   coarse stage off, or on at any scale and on a phone; default on at 50 and 100 on a desktop), ?near= (metres of ground the first
 //   picture waits for, default 8), ?fireflies=
 //   (up to 28), ?seed=, ?full (desktop settings on a phone),
 //   ?weather= (any ATMOSPHERES name, default fog; clear for no mist), ?mist= (its thickness,
@@ -53,6 +54,16 @@ const params = new URLSearchParams(location.search);
 const seed = hashSeed(params.get("seed") ?? "nightwood");
 const num = (key: string, fallback: number) => (params.has(key) ? Number(params.get(key)) : fallback);
 
+/**
+ * Coarse first, one swap (../shared/detail.ts), per device. On: at 50 and 100 vox/m the first
+ * picture shows every model built at 10 vox/m and drawn enlarged, and the fine models are then
+ * generated, uploaded and baked in the background and swapped in at once. That is a second
+ * generation, upload and bake running while the user is already in the scene: on a desktop it
+ * buys a much earlier first picture, on a phone it lags the scene for longer than it saves, so
+ * phones load the fine models once, before the first picture. ?coarse=0 / ?coarse=1 override.
+ */
+const COARSE_FIRST = { desktop: true, phone: false };
+
 // The loading screen's rows, in this order (phases not listed are not shown, but stay on the
 // tracker for window.loadTimeline and ?perf). At 50 and 100 vox/m the rows before the first
 // picture are the coarse stage's, and the fine stage streams on in the corner pill; the list is
@@ -82,8 +93,8 @@ if (app) {
   /** Metres to voxels at this resolution. */
   const m = (metres: number) => metres * VPM;
   const K = VPM / 10;
-  /** The coarse stage's factor: its models are built at 10 vox/m and drawn KC times enlarged (1: no coarse stage, at 20). */
-  const KC = coarseFactor(VPM, params);
+  /** The coarse stage's factor: its models are built at 10 vox/m and drawn KC times enlarged (1: no coarse stage: at 20, on a phone, or ?coarse=0). */
+  const KC = coarseFactor(VPM, params, phone ? COARSE_FIRST.phone : COARSE_FIRST.desktop);
   if (KC > 1) screen.setSteps(loadingSteps(true));
   // Density knobs, 0-1 (for measuring what the scene costs): ?trees=, ?shrubs=, ?plants=.
   const DENSITY = { trees: num("trees", 1), shrubs: num("shrubs", 1), plants: num("plants", 1) };

@@ -8,9 +8,17 @@
 // instance layer keeps the coarse set drawing until the fine set's bake applies, then releases
 // the coarse models (`setStatic` + `commitAsync` in one task), so the swap is one frame.
 //
-// This file holds the parts both pages share: the factor, the phase names of the fine stage (so
-// the load timeline tells the stages apart, and the loading screen lists them as background
-// rows), the tracker that files the loaders' phases under them, and the swap itself.
+// It is a choice, not a default of the engine: the fine stage is a second generation, upload and
+// bake that run while the user is already in the scene, so the scene takes longer to finish and
+// the frames during the swap cost more. On a desktop that buys a first picture in a fraction of
+// the time; on a phone the background work lags the scene for longer than it saves, so the
+// examples load phones in one stage. Each page picks with a `COARSE_FIRST` switch at its top.
+//
+// This file holds the parts both pages share, and is the piece to copy into an app that wants
+// the routine: the factor, the phase names of the fine stage (so the load timeline tells the
+// stages apart, and the loading screen lists them as background rows), the tracker that files the
+// loaders' phases under them, and the swap itself. Nothing in it runs unless a page asks for it:
+// with a factor of 1 a page loads its fine models once and never calls the rest.
 
 import type { InstanceLayer, LoadTracker } from "@voxolith/engine";
 import { LOAD_PHASES } from "@voxolith/engine";
@@ -23,14 +31,17 @@ export const COARSE_VPM = 10;
 /**
  * The factor the coarse models are drawn enlarged by at `vpm`, or 1 for no coarse stage.
  *
- * Only 50 and 100 vox/m get one (factors 5 and 10). At 20 the factor would be 2: the fine models
+ * `enabled` is the page's own choice (its `COARSE_FIRST` switch for this device). Even then only
+ * 50 and 100 vox/m get one (factors 5 and 10). At 20 the factor would be 2: the fine models
  * there cost about a tenth of those at 50 and the page is up in about 2 s warm, most of it the
  * terrain and ground, which a coarse stage does not shorten; a second upload and bake would only
- * add work. `?coarse=0` turns the stage off at any scale (to compare, or to go straight to fine).
+ * add work. The URL overrides both: `?coarse=0` turns the stage off, `?coarse=1` on at any scale
+ * that is a multiple of 10 (at 20 too, factor 2), to compare or to test it on a phone.
  */
-export function coarseFactor(vpm: number, params: URLSearchParams): number {
-  if (params.get("coarse") === "0" || vpm < 50) return 1;
-  return vpm % COARSE_VPM === 0 ? vpm / COARSE_VPM : 1;
+export function coarseFactor(vpm: number, params: URLSearchParams, enabled: boolean): number {
+  const asked = params.get("coarse");
+  const on = asked === "1" ? true : asked === "0" ? false : enabled && vpm >= 50;
+  return on && vpm > COARSE_VPM && vpm % COARSE_VPM === 0 ? vpm / COARSE_VPM : 1;
 }
 
 /** The fine stage's phases: the engine's own, filed under a name of their own. */
