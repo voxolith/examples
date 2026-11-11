@@ -29,7 +29,8 @@
 //   ?weather= (any ATMOSPHERES name, default fog; clear for no mist), ?mist= (its thickness,
 //   default 0.8), ?view= (the view distance in metres, default 24), ?trees=, ?shrubs=, ?plants=
 //   (densities, 0-1), ?temporal=0 (shadows and AO traced in full every frame), ?reflections=1
-//   (metal and glass trace their rays), ?renderScale= (a fixed render scale instead of the adaptive one), ?perf (the
+//   (metal and glass trace their rays), ?upscale=0.5 (trace at half the output size and
+//   resolve to it over frames; experimental), ?renderScale= (a fixed render scale instead of the adaptive one), ?perf (the
 //   overlay, and the load timeline in the console).
 
 import { createRenderer, firstPersonFrame, makePerf, observeResize, QUALITY_PRESETS, resizeToDisplay, type PointLight, type Renderer, type Vec3 } from "@voxolith/renderer";
@@ -191,7 +192,12 @@ if (app) {
   // No reflection or refraction rays (?reflections=1 for them): from where the camera stands they
   // only reach the cabin's door handle and gutter, and compiled out the frame is a fifth cheaper.
   const reflections = params.get("reflections") === "1";
-  renderer.setQuality({ ...QUALITY_PRESETS[quality], maxSteps: gpu.software ? 768 : 1024, shadowSteps: quality === "low" ? 0 : 128, temporal, reflections });
+  // ?upscale=0.5: trace at that fraction of the output and resolve to it over frames (needs temporal).
+  // On a phone the adaptive controller drives it instead (below): the output keeps its size and
+  // the traced fraction follows the frame time.
+  const autoUpscale = phone && temporal && !params.has("upscale") && !FIXED_SCALE;
+  const upscale = autoUpscale ? 0.5 : Math.max(0.25, Math.min(1, num("upscale", 1)));
+  renderer.setQuality({ ...QUALITY_PRESETS[quality], maxSteps: gpu.software ? 768 : 1024, shadowSteps: quality === "low" ? 0 : 128, temporal, reflections, upscale });
   if (gpu.software) gpu.renderScale = Math.min(gpu.renderScale, 0.3);
   else if (phone) gpu.renderScale = Math.min(gpu.renderScale, 0.6);
   // deferPipelines above: compile what the frames use (instances: the wood is not placed yet)
@@ -334,7 +340,14 @@ if (app) {
   const input = createInput(canvas, { loop: { invalidate: () => loop.invalidate() } });
   // Facing the cottage to start (the look yaw turns right as it grows, from +z).
   const look = makeLookController(input, { yaw: (HOUSE_DIR * 180) / Math.PI, pitch: 2, keys: { left: ["KeyQ"], right: ["KeyE"], up: ["KeyR"], down: ["KeyF"] } });
-  const perf = makePerf({ enabled: params.has("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.35, retryAfterMs: Infinity, gpuTimings: () => renderer.gpuTimings() });
+  // Phones: the controller's scale is the traced fraction of a fixed output (RenderQuality.upscale),
+  // aimed at 30 fps: tracing is about 45x dearer per pixel there than on a desktop (measured on an
+  // Adreno 725), and below a quarter the picture goes soft.
+  const outputScale = gpu.renderScale;
+  const perf = autoUpscale
+    ? makePerf({ enabled: params.has("perf"), scale: upscale, minScale: 0.25, maxScale: 1, targetMs: 33.4, retryAfterMs: Infinity, gpuTimings: () => renderer.gpuTimings() })
+    : makePerf({ enabled: params.has("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.35, retryAfterMs: Infinity, gpuTimings: () => renderer.gpuTimings() });
+  let traced = upscale;
 
   // Night: the moon as the key light, a little brighter and bluer than the default night. The
   // weather (?weather=, default fog) is the engine's; its fog is recoloured to moonlit mist, since
@@ -362,7 +375,10 @@ if (app) {
     const t = (now - t0) / 1000;
     renderer.setLights(lights(t));
     perf.frame(now);
-    gpu.renderScale = FIXED_SCALE || perf.scale();
+    if (autoUpscale) {
+      gpu.renderScale = outputScale;
+      if (perf.scale() !== traced) renderer.setQuality({ upscale: (traced = perf.scale()) });
+    } else gpu.renderScale = FIXED_SCALE || perf.scale();
     resizeToDisplay(gpu);
     renderer.render({ ...firstPersonFrame(eye, look.yaw(), look.pitch(), 68), ...atm, fog, time: t });
   }, true);
