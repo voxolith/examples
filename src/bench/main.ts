@@ -32,6 +32,9 @@
 //                   every preset, since fog.distance bounds the rays
 //   ?anim=1         move things by the wall clock instead of the frame counter
 //   ?e2e            expose window.bench (below), for tools
+//   ?hold=N         advance the motion N frames (stones, rats, water), then hold it there while
+//                   frames keep being drawn: every load of every build then shows the same
+//                   picture, so GPU time compares frame for frame (render-bench passes 120)
 //   ?diag           the adapter's limits in the HUD (shared/boot.ts)
 //
 // window.bench, with ?e2e:
@@ -49,6 +52,16 @@
 //                                       renderer is held (still water); frames are still drawn.
 //                                       freeze(false) resumes from the same state (the motion's
 //                                       frame counter does not advance while frozen)
+//   measure(view, n): Promise<{ samples, frames }>
+//                                       go to a view, let it settle, draw n frames and return each
+//                                       measured frame's GPU ms (all passes summed, unaveraged).
+//                                       It draws the frames itself, back to back, each once the
+//                                       GPU has finished the one before, not from the browser's
+//                                       frame callback: so it runs at the GPU's speed rather than
+//                                       the display's, the GPU never idles between frames, and it
+//                                       works in a tab that is not in front. The page's own loop
+//                                       stays stopped afterwards (frames() starts it again), so
+//                                       two open bench pages do not share the GPU
 //   setViewDistance(v | null): void     caps the frame's fog.distance (voxels) at min(page's, v);
 //                                       e.g. so a no-skip walk's step cap is not reached first;
 //                                       null restores the page's own
@@ -102,6 +115,7 @@ if (app) {
   const K = VPM / 10;
   const RENDER_SCALE = Math.max(0.1, Math.min(2, num("renderScale", 0.5)));
   const ANIM = params.get("anim") === "1";
+  const HOLD = Math.max(0, Math.round(num("hold", 0)));
   const askedQuality = params.get("quality");
   const PRESET: QualityPreset = askedQuality === "low" || askedQuality === "medium" || askedQuality === "high" ? askedQuality : gpu.software ? "low" : "high";
   const START_QUALITY: RenderQuality = { ...QUALITY_PRESETS[PRESET], maxSteps: 1024 };
@@ -414,11 +428,12 @@ if (app) {
   load.pipelines = performance.now() - t;
 
   let lastTime = 0;
-  const loop = runLoop((now) => {
+  const draw = (now: number) => {
     const cam = CAMERAS[view];
     // Frozen: draw the held state at the held time (the tick does not move either).
-    const time = frozen ? lastTime : simTime(now);
-    if (!frozen) {
+    const held = frozen || (HOLD > 0 && tick >= HOLD);
+    const time = held ? lastTime : simTime(now);
+    if (!held) {
       advance(time, ANIM ? Math.min(0.05, time - lastTime) : STEP);
       lastTime = time;
       crowd.update(members, cam.eye as [number, number, number]);
@@ -428,7 +443,7 @@ if (app) {
     gpu.renderScale = RENDER_SCALE;
     resizeToDisplay(gpu);
     renderer.render({ ...firstPersonFrame(cam.eye, cam.yaw, cam.pitch, 68), ...atm, fog: viewCap === null ? fog : { ...fog, distance: Math.min(fog.distance, viewCap) }, time });
-    if (!frozen) tick++;
+    if (!held) tick++;
     drawn++;
     stamps.push(now);
     while (stamps.length && now - stamps[0] > 1000) stamps.shift();
@@ -439,7 +454,8 @@ if (app) {
         waiting.splice(i, 1);
         gpu.device.queue.onSubmittedWorkDone().then(resolve);
       }
-  }, true);
+  };
+  const loop = runLoop(draw, true);
   observeResize(canvas, loop);
   screen.ready();
   markFrames(tracker, renderer);
@@ -466,7 +482,39 @@ if (app) {
           report();
           loop.invalidate();
         },
-        frames: (n: number) => new Promise<void>((resolve) => waiting.push({ at: drawn + Math.max(1, Math.round(n)), resolve })),
+        frames: (n: number) => {
+          loop.setContinuous(true); // measure() leaves the loop stopped
+          return new Promise<void>((resolve) => waiting.push({ at: drawn + Math.max(1, Math.round(n)), resolve }));
+        },
+        async measure(i: number, n: number) {
+          // Let the timer's readbacks land. Not a timeout: timers in a tab that is not in front
+          // are throttled to one a second.
+          const settle = async () => { for (let k = 0; k < 4; k++) await gpu.device.queue.onSubmittedWorkDone(); };
+          // Three at a time (the GPU timer reads back three frames at once), then wait for the GPU.
+          const BATCH = Math.max(1, Math.round(num("batch", 3)));
+          const frames = async (k: number) => {
+            for (let f = 0; f < k; f += BATCH) {
+              for (let b = 0; b < BATCH && f + b < k; b++) draw(performance.now());
+              await gpu.device.queue.onSubmittedWorkDone();
+            }
+          };
+          view = Math.max(0, Math.min(VIEWS - 1, Math.round(i)));
+          loop.setContinuous(false);
+          // Until the motion is held (?hold), the picture is not the one to measure.
+          while (HOLD > 0 && tick < HOLD) await frames(1);
+          await frames(20);
+          // Readbacks of the settling frames land a moment after the GPU finishes them.
+          await settle();
+          renderer.takeGpuSamples();
+          await frames(n);
+          await settle();
+          const per = Object.values(renderer.takeGpuSamples() ?? {});
+          const count = per.length ? Math.min(...per.map((p) => p.length)) : 0;
+          const samples: number[] = [];
+          for (let k = 0; k < count; k++) samples.push(per.reduce((a, p) => a + p[k], 0));
+          report();
+          return { samples, frames: n };
+        },
         stats: () => {
           const st = renderer.instanceStats();
           return {

@@ -8,8 +8,9 @@
 //
 // The lighting is the point of the page. Today it is the key light (the moon), the renderer's
 // point lights (the lantern, and one per firefly, unshadowed, with a halo) and the emissive
-// window glass, which lights only itself; the renderer's roadmap (temporal accumulation, then a
-// world-space radiance cache) is measured against this page.
+// window glass, which lights only itself. Shadows and ambient occlusion accumulate over frames
+// (the renderer's temporal mode); the renderer's roadmap (next a world-space radiance cache) is
+// measured against this page.
 //
 // Models are generated at 50 voxels per metre (2 cm) on a desktop and 20 (5 cm) on a phone (a
 // touch-only pointer, or storage bindings under 512 MiB); the HUD's button reloads one scale finer
@@ -27,7 +28,8 @@
 //   (up to 28), ?seed=, ?full (desktop settings on a phone),
 //   ?weather= (any ATMOSPHERES name, default fog; clear for no mist), ?mist= (its thickness,
 //   default 0.8), ?view= (the view distance in metres, default 24), ?trees=, ?shrubs=, ?plants=
-//   (densities, 0-1), ?renderScale= (a fixed render scale instead of the adaptive one), ?perf (the
+//   (densities, 0-1), ?temporal=0 (shadows and AO traced in full every frame), ?reflections=1
+//   (metal and glass trace their rays), ?renderScale= (a fixed render scale instead of the adaptive one), ?perf (the
 //   overlay, and the load timeline in the console).
 
 import { createRenderer, firstPersonFrame, makePerf, observeResize, QUALITY_PRESETS, resizeToDisplay, type PointLight, type Renderer, type Vec3 } from "@voxolith/renderer";
@@ -183,7 +185,13 @@ if (app) {
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   const quality = gpu.software ? "low" : phone ? "medium" : "high";
   // The view distance bounds every primary ray (about 1.7 steps per voxel of it at worst).
-  renderer.setQuality({ ...QUALITY_PRESETS[quality], maxSteps: gpu.software ? 768 : 1024, shadowSteps: quality === "low" ? 0 : 128 });
+  // Shadows and AO accumulate over frames (?temporal=0 for one ray per pixel per frame): the shadow
+  // rays are half of this page's frame without it. It needs the compute path, and is skipped otherwise.
+  const temporal = quality !== "low" && params.get("temporal") !== "0";
+  // No reflection or refraction rays (?reflections=1 for them): from where the camera stands they
+  // only reach the cabin's door handle and gutter, and compiled out the frame is a fifth cheaper.
+  const reflections = params.get("reflections") === "1";
+  renderer.setQuality({ ...QUALITY_PRESETS[quality], maxSteps: gpu.software ? 768 : 1024, shadowSteps: quality === "low" ? 0 : 128, temporal, reflections });
   if (gpu.software) gpu.renderScale = Math.min(gpu.renderScale, 0.3);
   else if (phone) gpu.renderScale = Math.min(gpu.renderScale, 0.6);
   // deferPipelines above: compile what the frames use (instances: the wood is not placed yet)
