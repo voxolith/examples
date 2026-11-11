@@ -9,6 +9,7 @@ import { makeLoadTracker, trackRenderer } from "@voxolith/engine";
 import { boot, runLoop } from "../shared/boot";
 import { markFrames, prepared, reportLoadTimeline, step } from "../shared/loading";
 import { NO_SCREEN, showLoadingScreen, STEPS } from "../shared/loading-screen";
+import { classicSky } from "@voxolith/engine/atmosphere";
 import { DAYLIGHT } from "../shared/env";
 
 // Nothing loads until a file is dropped, so no loading screen at the start: each drop opens one.
@@ -62,7 +63,7 @@ if (app) {
       }));
       const r = await createRenderer(gpu, {
         size: scene.size, data: scene.data, palette: scene.palette, materials: scene.materials,
-      }, { onLoad: trackRenderer(tracker), deferPipelines: true });
+      }, { onLoad: trackRenderer(tracker), deferPipelines: true, background: classicSky });
       r.updateCoarse(new OccupancyGrid(scene.size, scene.data).data);
       // deferPipelines: compile before the loop draws it.
       await prepared(r.prepare());

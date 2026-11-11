@@ -58,7 +58,7 @@ import { hashSeed, seededRandom, sparseDims } from "@voxolith/renderer/core";
 import { makeChunkedWorld, makeInstanceLayer, PaletteAllocator, trackRenderer, type Entity, type EntityModel, type InstanceLayer, type InstancePlacement } from "@voxolith/engine";
 import { makeAnimator, makeCrowd, type CrowdMember } from "@voxolith/engine/animation";
 import { makeGeneratorPool } from "@voxolith/engine/worker";
-import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+import { atmosphereFrame, ATMOSPHERES, classicSky, timeOfDay } from "@voxolith/engine/atmosphere";
 import { generateTerrain, refineTerrain } from "@voxolith/gen-terrain";
 import { PRESETS as TREES } from "@voxolith/gen-tree";
 import { PRESETS as BUSHES } from "@voxolith/gen-bush";
@@ -199,7 +199,7 @@ if (app) {
   const palette = new PaletteAllocator(1);
   const { base: groundBase } = palette.allocate(terrain.roles, "terrain");
   const rockBase = KINDS.rocks.map((k) => palette.allocate(fine.get(k.key)!.model.roles, k.key).base);
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(tracker), deferPipelines: true });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(tracker), deferPipelines: true, background: classicSky });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   renderer.setQuality(START_QUALITY);
   gpu.renderScale = RENDER_SCALE;

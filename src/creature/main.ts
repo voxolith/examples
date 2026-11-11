@@ -42,7 +42,7 @@ import {
   type Animator,
 } from "@voxolith/engine/animation";
 import { createInput, makeOrbitController, prepareSurface, recogniseGestures } from "@voxolith/engine/input";
-import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+import { atmosphereFrame, ATMOSPHERES, classicSky, timeOfDay } from "@voxolith/engine/atmosphere";
 import { generateTerrain } from "@voxolith/gen-terrain";
 import { generateCreature, PRESETS, ROLE } from "@voxolith/gen-creature";
 import { boot, runLoop } from "../shared/boot";
@@ -83,7 +83,7 @@ if (app) {
   const variants = await step(load, "creatures", () => KINDS.map((k, i) => generateCreature(PRESETS[k], seededRandom(seed + i * 101), k).entity));
   const bases = variants.map((e, i) => palette.allocate(e.model.roles, `creature:${KINDS[i]}`).base);
 
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   renderer.setQuality(gpu.software ? "low" : "medium");
   // deferPipelines above: compile while the ground goes in (the rats are stamped, so no instance

@@ -53,7 +53,7 @@ import {
 import { hashSeed, seededRandom } from "@voxolith/renderer/core";
 import { blitModelToBricks, PaletteAllocator, trackRenderer, type Entity, type Orientation, type Role } from "@voxolith/engine";
 import { createInput, makeOrbitController, prepareSurface } from "@voxolith/engine/input";
-import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+import { atmosphereFrame, ATMOSPHERES, classicSky, timeOfDay } from "@voxolith/engine/atmosphere";
 import { generateTerrain } from "@voxolith/gen-terrain";
 import { generateTree, PRESETS as TREES } from "@voxolith/gen-tree";
 import { generateRock, PRESETS as ROCKS } from "@voxolith/gen-rock";
@@ -164,7 +164,7 @@ if (app) {
   models.end();
 
   // --- renderer ----------------------------------------------------------------------
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   const asked = params.get("quality") as QualityPreset | null;
   const quality: QualityPreset = asked && asked in QUALITY_PRESETS ? asked : gpu.software ? "low" : "medium";

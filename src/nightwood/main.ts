@@ -35,7 +35,7 @@ import { hashSeed, seededRandom } from "@voxolith/renderer/core";
 import { columnBoxes, makeChunkedWorld, makeInstanceLayer, PaletteAllocator, trackRenderer, type Entity, type RGB } from "@voxolith/engine";
 import { makeGeneratorPool, type GeneratorPool } from "@voxolith/engine/worker";
 import { createInput, makeLookController, prepareSurface } from "@voxolith/engine/input";
-import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+import { atmosphereFrame, ATMOSPHERES, classicSky, timeOfDay } from "@voxolith/engine/atmosphere";
 import { buildRoles, fineTerrainInit, refineTerrain, type TerrainParams } from "@voxolith/gen-terrain";
 import { PRESETS as TREES } from "@voxolith/gen-tree";
 import { PRESETS as BUSHES } from "@voxolith/gen-bush";
@@ -179,7 +179,7 @@ if (app) {
   const palette = new PaletteAllocator(1);
   // The terrain's roles depend only on its colours (the defaults), so the palette need not wait for its heights.
   const { base: groundBase } = palette.allocate(buildRoles(), "terrain");
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   const quality = gpu.software ? "low" : phone ? "medium" : "high";
   // The view distance bounds every primary ray (about 1.7 steps per voxel of it at worst).

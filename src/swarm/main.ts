@@ -17,7 +17,7 @@ import { hashSeed, seededRandom } from "@voxolith/renderer/core";
 import { makeBrickStamper, makeInstanceLayer, PaletteAllocator, trackRenderer, type Entity } from "@voxolith/engine";
 import { makeAnimator, makeCrowd, type CrowdMember, type CrowdStats } from "@voxolith/engine/animation";
 import { createInput, makeOrbitController, prepareSurface, recogniseGestures } from "@voxolith/engine/input";
-import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+import { atmosphereFrame, ATMOSPHERES, classicSky, timeOfDay } from "@voxolith/engine/atmosphere";
 import { generateTerrain } from "@voxolith/gen-terrain";
 import { generateCreature, PRESETS } from "@voxolith/gen-creature";
 import { boot, runLoop } from "../shared/boot";
@@ -55,7 +55,7 @@ if (app) {
   const bases = variants.map((e, i) => palette.allocate(e.model.roles, KINDS[i]).base);
 
   const mode = params.has("rigged") ? "rigged" : params.has("instances") ? "instances" : "stamped";
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   renderer.setQuality(gpu.software ? "low" : "medium");
   // deferPipelines above: compile what the crowd mode draws (below) while the ground goes in, and

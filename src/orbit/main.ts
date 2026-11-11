@@ -8,6 +8,7 @@ import { trackRenderer } from "@voxolith/engine";
 import { boot, runLoop } from "../shared/boot";
 import { markFrames, prepared, reportLoadTimeline } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
+import { classicSky } from "@voxolith/engine/atmosphere";
 import { DAYLIGHT } from "../shared/env";
 
 // The loading screen's rows, in this order (phases not listed are not shown, but stay on the
@@ -42,7 +43,7 @@ if (app) {
   palette.set([0.45, 0.33, 0.22, 1], DIRT * 4);
   palette.set([0.25, 0.5, 0.85, 1], WATER * 4);
 
-  const renderer = await createRenderer(gpu, { size, data, palette }, { onLoad: trackRenderer(load), deferPipelines: true });
+  const renderer = await createRenderer(gpu, { size, data, palette }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
   // ?selftest: bands showing which stage of the voxel lookup works on this GPU.
   { const st = new URLSearchParams(location.search).get("selftest"); if (st !== null) renderer.setDebug(st === "3" ? 9 : st === "2" ? 8 : 7); }
   renderer.updateCoarse(new OccupancyGrid(size, data).data);

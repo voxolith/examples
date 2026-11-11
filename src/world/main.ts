@@ -44,6 +44,7 @@ import {
   approach,
   atmosphereFrame,
   ATMOSPHERES,
+  classicSky,
   makeAtmosphereTransition,
   timeOfDay,
   type AtmosphereName,
@@ -109,7 +110,7 @@ if (app) {
   const { base: s0 } = palette.allocate(settlement, "settlement");
   const PATH = s0, PATH2 = s0 + 1, YARD = s0 + 2;
 
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
   // ?selftest: bands showing which stage of the voxel lookup works on this GPU.
   { const st = new URLSearchParams(location.search).get("selftest"); if (st !== null) renderer.setDebug(st === "3" ? 9 : st === "2" ? 8 : 7); }
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);

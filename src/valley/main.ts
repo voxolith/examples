@@ -80,7 +80,7 @@ import {
 import { makeAnimator, makeCrowd, type CrowdMember } from "@voxolith/engine/animation";
 import { makeGeneratorPool, type GeneratorPool } from "@voxolith/engine/worker";
 import { createInput, makeOrbitController, prepareSurface, recogniseGestures } from "@voxolith/engine/input";
-import { approach, atmosphereFrame, ATMOSPHERES, makeAtmosphereTransition, timeOfDay, type AtmosphereName } from "@voxolith/engine/atmosphere";
+import { approach, atmosphereFrame, ATMOSPHERES, classicSky, makeAtmosphereTransition, timeOfDay, type AtmosphereName } from "@voxolith/engine/atmosphere";
 import { buildRoles, fineTerrainInit, refineTerrain } from "@voxolith/gen-terrain";
 import { atScale, generateCreature, minVoxelsPerMetre, PRESETS as RATS, realSizeAt } from "@voxolith/gen-creature";
 import { layoutValley, paletteKey, TILE, valleySites, valleySpecies, valleyTerrainParams, workerSeed, type Season } from "../world/layout";
@@ -247,7 +247,7 @@ if (app) {
   // --- renderer ---------------------------------------------------------------------
   // deferPipelines: nothing is compiled until `prepare` below, so the whole compile is awaited
   // (and timed as the "pipelines" step) instead of stalling the first frame.
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   const quality = gpu.software || phone ? "low" : "medium";
   // Rays cross thousands of voxels of air here; the 64-voxel skip keeps

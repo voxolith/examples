@@ -7,6 +7,7 @@ import { trackRenderer } from "@voxolith/engine";
 import { boot, runLoop } from "../shared/boot";
 import { markFrames, prepared, reportLoadTimeline, step } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
+import { classicSky } from "@voxolith/engine/atmosphere";
 import { STUDIO } from "../shared/env";
 import { modelToGrid, frameGrid } from "../shared/voxGrid";
 
@@ -33,7 +34,7 @@ if (app) {
 
   // 2. Create the renderer for this grid and give it the coarse occupancy
   //    grid so rays skip empty space.
-  const renderer = await createRenderer(gpu, grid, { onLoad: trackRenderer(load), deferPipelines: true });
+  const renderer = await createRenderer(gpu, grid, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
   renderer.updateCoarse(new OccupancyGrid(grid.size, grid.data).data);
   renderer.setFloor({ enabled: true, y: 0, colorA: [0.22, 0.23, 0.27], colorB: [0.17, 0.18, 0.21] });
 

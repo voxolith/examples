@@ -20,7 +20,7 @@ import { hashSeed, seededRandom } from "@voxolith/renderer/core";
 import { blitModelToBricks, makeInstanceLayer, modelAt, PaletteAllocator, trackRenderer, type Entity, type EntityModel, type EntityPlacement, type InstanceTarget, type Orientation } from "@voxolith/engine";
 import { makeAnimator, makeCrowd, type CrowdMember } from "@voxolith/engine/animation";
 import { createInput, makeOrbitController, prepareSurface } from "@voxolith/engine/input";
-import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+import { atmosphereFrame, ATMOSPHERES, classicSky, timeOfDay } from "@voxolith/engine/atmosphere";
 import { generateTerrain } from "@voxolith/gen-terrain";
 import { generateTree, PRESETS as TREES } from "@voxolith/gen-tree";
 import { generateCreature, PRESETS as RATS } from "@voxolith/gen-creature";
@@ -78,7 +78,7 @@ if (app) {
   const rats: Entity[] = await step(load, "creatures", () => KINDS.map((k, i) => generateCreature(RATS[k], seededRandom(seed + i * 97), k).entity));
   const ratBase = rats.map((e, i) => palette.allocate(e.model.roles, KINDS[i]).base);
 
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   renderer.setQuality(gpu.software ? "low" : "medium");
   // deferPipelines above: compile the pipelines the frames will use (instances: none is placed
