@@ -21,13 +21,13 @@
 //     of centimetre voxels does not fit in memory at once; its height map is
 //     sampled and its chunks are filled on workers
 //     (../shared/terrain.ts, ../shared/ground.ts);
-//   - rats can roam the village as an instanced crowd, but by default only
-//     at a scale where they come out at their real size (gen-creature's
-//     realSizeAt: from about 84 vox/m), which none of the scales offered
-//     here reaches: a rat's legs would be under two voxels thick at real
-//     size, so it has to be built larger than life (0.86 m long at 50,
-//     2.15 m at 20). So there are none unless ?rats= (the panel's Rats)
-//     asks for them, and the HUD says why.
+//   - rats roam the village as an instanced crowd, as small as the
+//     generator builds one (shape.size 0.4, 25 voxels nose to tail tip):
+//     real size at 50 (0.5 m), 1.25 times life at 40 and 1.7 times at 30,
+//     and fewer of them the coarser the scale (60, 40, 24). At 20 and 10
+//     the smallest rat is 1.25 m and 2.5 m long, a giant among the houses,
+//     so there are none unless ?rats= (the panel's Rats) asks for them;
+//     the HUD says how large they are, or why there are none.
 //
 // URL options (declared below; the HUD's Options panel changes them: time
 // and weather at once, the rest by reloading):
@@ -37,8 +37,9 @@
 //               size as on the world page (default 4), ?variants= the models
 //               per species (default 3; the world page uses 10, which matches
 //               it exactly but costs several times the GPU memory),
-//               ?rats= the crowd (default none: see above; ?rats=N forces
-//               a crowd of N, larger than life), ?radius= the streamed
+//               ?rats= the crowd (default 60 at 50, 40 at 40, 24 at 30,
+//               none at 20 and 10 or on a phone; ?rats=N forces a crowd
+//               of N at any scale, ?rats=0 none), ?radius= the streamed
 //               radius in metres (default 24), ?near= the ground in metres
 //               the first picture waits for (default 18), ?coarse=0|1 the
 //               coarse stage off, or on at any scale and on a phone
@@ -87,7 +88,7 @@ import { makeGeneratorPool, type GeneratorPool } from "@voxolith/engine/worker";
 import { createInput, makeOrbitController, prepareSurface, recogniseGestures } from "@voxolith/engine/input";
 import { approach, atmosphereFrame, ATMOSPHERES, classicSky, makeAtmosphereTransition, makePhysicalSky, timeOfDay, type AtmosphereName } from "@voxolith/engine/atmosphere";
 import { buildRoles, fineTerrainInit, refineTerrain } from "@voxolith/gen-terrain";
-import { atScale, generateCreature, minVoxelsPerMetre, PRESETS as RATS, realSizeAt } from "@voxolith/gen-creature";
+import { atScale, generateCreature, PRESETS as RATS } from "@voxolith/gen-creature";
 import { layoutValley, paletteKey, TILE, valleySites, valleySpecies, valleyTerrainParams, workerSeed, type Season } from "../world/layout";
 import { boot, runLoop } from "../shared/boot";
 import { markFrames, nextFrame, prepared, reportLoadTimeline } from "../shared/loading";
@@ -106,7 +107,7 @@ const options = defineOptions({
   vpm: vpmOption,
   scale: { kind: "number", label: "Valley size", help: "Tiles of 32 m along each side, as on the world page.", min: 1, max: 8, step: 1, integer: true, default: 4 },
   variants: { kind: "number", label: "Models per species", help: "More variety costs GPU memory, several times as much at 10 as at 3.", min: 1, max: 10, step: 1, default: 3 },
-  rats: { kind: "number", label: "Rats", help: "The crowd in the village. None by default: a rat is only real size from about 84 vox/m, more than this page offers. A number adds them anyway, larger than life (0.86 m long at 50).", min: 0, max: 400, step: 10, default: 0 },
+  rats: { kind: "number", label: "Rats", help: "The crowd in the village: 60 real-size rats at 50 vox/m, 40 at 40 and 24 at 30, where the smallest rat is larger than life. None at 20 and 10 or on a phone, where a number adds them anyway (1.25 m long at 20).", min: 0, max: 400, step: 10, default: 60 },
   rigged: { kind: "toggle", label: "Pose rats on the GPU", help: "One rest model per variant, posed by the renderer, instead of baked poses.", default: false },
   ...VALLEY_OPTIONS,
   radius: { kind: "number", label: "Streamed radius", help: "Metres of ground kept around the view.", min: 8, max: 256, step: 4, default: 24 },
@@ -180,14 +181,34 @@ if (app) {
   const COARSE = { x: TILE * SPAN, y: 192, z: TILE * SPAN };
   const SIZE = { x: COARSE.x * K, y: COARSE.y * K, z: COARSE.z * K };
   const VARIANTS = options.get("variants", phone ? 1 : 3);
-  // Rats only where every variant comes out at its real size (from about 84 vox/m: none of
-  // the scales offered), unless ?rats= asks for them anyway.
+  // Rats, adjusted to the scale. gen-creature's `atScale` holds a rat at shape.size 0.7 (43
+  // voxels long: 0.86 m at 50 vox/m), the size its checks cover. Its body builder goes down to
+  // 0.4 (25 voxels), keeping the lower legs and feet two voxels thick, and the clips played here
+  // (walk, run, idle, sniff) stay in one piece at every size between (measured over twelve frames
+  // of each, for all four coats; only `death`, not played here, sheds a few voxels). So a rat is
+  // built at its real size where that is 0.4 or more, and at 0.4 below.
   const RAT_KINDS = ["rat", "grey rat", "lab rat", "black rat"];
-  const ratsReal = RAT_KINDS.every((k) => realSizeAt(RATS[k], VPM));
-  const RAT_COUNT = options.get("rats", ratsReal ? (phone ? 20 : 60) : 0);
-  /** The HUD's note when rats were left out: the scale from which they are real size, and how to get them anyway. */
-  const ratScale = Math.ceil(Math.max(...RAT_KINDS.map((k) => minVoxelsPerMetre(RATS[k]))));
-  const ratsNote = !RAT_COUNT && !options.given("rats") ? `no rats (real size needs ${ratScale} voxels/m; Options adds them)` : `${RAT_COUNT} rats`;
+  const RAT_MIN_SIZE = 0.4;
+  /** A preset's real size at VPM, unclamped: sizes are linear in the scale, and 100 vox/m is where `atScale` is real size. */
+  const realSize = (kind: string) => (atScale(RATS[kind], 100).shape.size * VPM) / 100;
+  const ratParams = (kind: string) => {
+    const p = structuredClone(RATS[kind]);
+    p.shape.size = Math.max(RAT_MIN_SIZE, Math.round(realSize(kind) * 20) / 20);
+    return p;
+  };
+  /** How many times life size the rats are here (1 at 50 vox/m, 1.25 at 40, 1.7 at 30, 2.5 at 20, 5 at 10). */
+  const ratLife = Math.max(...RAT_KINDS.map((k) => ratParams(k).shape.size / realSize(k)));
+  // By default only where a rat still reads as a small animal from this camera, and fewer the
+  // coarser (each is larger); a phone has none (its profile is 20 vox/m). ?rats= overrides.
+  const RATS_AT: Record<number, number> = { 50: 60, 40: 40, 30: 24 };
+  const RAT_COUNT = options.get("rats", phone ? 0 : (RATS_AT[VPM] ?? 0));
+  const lifeNote = ratLife > 1.01 ? `${+ratLife.toFixed(1)}× life size` : "real size";
+  /** The HUD's note: how many rats and how large, or why there are none and how to get them anyway. */
+  const ratsNote = RAT_COUNT
+    ? `${RAT_COUNT} rats${ratLife > 1.01 ? `, larger than life (${lifeNote})` : ` (${lifeNote})`}`
+    : options.given("rats") ? "0 rats"
+    : ratLife > 2 ? `no rats (the smallest would be ${lifeNote} at ${VPM} voxels/m; Options adds them)`
+    : "no rats (phone settings; Options adds them)";
   /**
    * Metres of ground around the view's target that the first picture waits for. The first view
    * looks down on the village from 26 m and reaches nearly to the streamed edge, so it needs most
@@ -263,7 +284,7 @@ if (app) {
   if (RAT_COUNT) {
     const task = load.task("creatures", RAT_KINDS.length);
     await nextFrame();
-    rats = RAT_KINDS.map((k, i) => { const e = generateCreature(atScale(RATS[k], VPM), seededRandom(seed + i * 97), k).entity; task.tick(); return e; });
+    rats = RAT_KINDS.map((k, i) => { const e = generateCreature(ratParams(k), seededRandom(seed + i * 97), k).entity; task.tick(); return e; });
     task.end();
   }
 

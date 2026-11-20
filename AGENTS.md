@@ -6,7 +6,10 @@ Minimal example pages at https://voxolith.github.io/examples/. Each page is one
 `appPages` in `src/lib/shared.ts`).
 
 Pages: hello-vox, orbit, minecraft-region, world, valley, nightwood, creature, swarm, instances,
-rigged, temporal, bench (the renderer benchmark's scene), plus the forest and village redirects.
+rigged, temporal, background, select, restyle, effects, chase, bench (the renderer benchmark's
+scene), plus the forest and village redirects. The five after temporal are small scenes in its
+manner, one renderer feature each: a host-written background, highlight and carving, palette
+restyling with models added and removed, stamped effects with their lights, and the chase camera.
 
 ## Commands
 
@@ -126,9 +129,12 @@ Siblings needed: renderer, engine, generators.
   add the option to its declaration, and to its header comment and docs page.
 - `src/world/layout.ts`: the shared valley design (terrain, sites, houses, pads, paths,
   scatter). `world` (10 vox/m) and `valley` (50 vox/m by default, 20 on a phone, 10 to 50 with
-  `?vpm=`) both read it; change the layout there, never in one page. The valley's rats only
-  appear by default where gen-creature's `realSizeAt` holds (from about 84 vox/m, so at none of
-  the scales offered); `?rats=N` forces them, and the HUD says why there are none.
+  `?vpm=`) both read it; change the layout there, never in one page. The valley's rats are built
+  as small as the creature generator goes (`shape.size` 0.4, below `atScale`'s floor of 0.7:
+  measured, the clips the page plays stay in one piece there): real size at 50 vox/m (60 of
+  them), 1.25 times life at 40 (40) and 1.7 times at 30 (24); none by default at 20 and 10 or
+  on a phone, where `?rats=N` still forces them. The HUD says how large they are, or why there
+  are none.
 - `src/world/gen.worker.ts`: the shared generator worker. It caches models in IndexedDB in
   production builds (`serveGenerators({ cache })`, salted by the worker's hashed URL).
 - `src/nightwood/`: first person in a night forest at 50 vox/m (20 on a phone, 10 to 50 with
