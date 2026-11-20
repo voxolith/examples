@@ -1,4 +1,4 @@
-// nightwood — standing in a forest clearing at night, at 20, 50 or 100 voxels per metre.
+// nightwood — standing in a forest clearing at night, at 10 to 50 voxels per metre.
 //
 // A dense wood of oak, birch and spruce with bushes, bracken and grass underneath, lit by the
 // moon; through a gap in the trees a cottage with its windows lit and a lantern by the door; and
@@ -16,17 +16,19 @@
 // touch-only pointer, or storage bindings under 512 MiB); the Options panel reloads at another
 // scale. They are made on workers (the world page's generator worker, with its model
 // cache in production builds) and drawn as instances; the ground is refined per brick column
-// around the clearing, its chunks filled on workers (../shared/ground.ts). At 50 and 100 on a
-// desktop the page shows the wood first with every model built at 10 vox/m and drawn 5 or 10
+// around the clearing, its chunks filled on workers (../shared/ground.ts). At 50 on a
+// desktop the page shows the wood first with every model built at 10 vox/m and drawn 5
 // times enlarged, then generates the fine models in the background and swaps them in at once
 // (../shared/detail.ts, switched per device by COARSE_FIRST below: phones load in one stage); the
 // first picture waits only for the ground within 8 m. Phones also get fewer fireflies and a lighter preset. Every length is in metres, so the
 // scene is the same at every scale. URL options (declared below; the HUD's Options panel changes
 // them: the weather and its mist at once, the rest by reloading):
-//   ?vpm=20|50|100 (default 50, 20 on a phone; anything else snaps to the nearest), ?coarse=0|1 (the
-//   coarse stage off, or on at any scale and on a phone; default on at 50 and 100 on a desktop), ?near= (metres of ground the first
+//   ?vpm=10|20|30|40|50 (default 50, 20 on a phone; anything else snaps to the nearest, so ?vpm=100 gives 50), ?coarse=0|1 (the
+//   coarse stage off, or on at any scale and on a phone; default on at 50 on a desktop), ?near= (metres of ground the first
 //   picture waits for, default 8), ?fireflies=
 //   (up to 28), ?seed=, ?full (desktop settings on a phone),
+//   ?quality= (low, medium or high; default high, medium on a phone, low on a CPU adapter), ?debug=
+//   (the renderer's step heatmap, 10, or the walk without skipping, 1),
 //   ?weather= (any ATMOSPHERES name, default fog; clear for no mist), ?mist= (its thickness,
 //   default 0.8), ?view= (the view distance in metres, default 24), ?trees=, ?shrubs=, ?plants=
 //   (densities, 0-1), ?temporal=0 (shadows and AO traced in full every frame), ?reflections=1
@@ -53,7 +55,7 @@ import { commitStatic, sceneWorker } from "../shared/placement";
 import { STEPS } from "../shared/loading-screen";
 import { COARSE_STEPS, COARSE_VPM, coarseFactor, coarseOption, FINE_STEPS, stagedLoad, swapToFine } from "../shared/detail";
 import { isPhone, phoneDevice, voxelSize, vpmOption } from "../shared/scale";
-import { defineOptions, OPTION, seedOption } from "../shared/options";
+import { defineOptions, OPTION, RENDER_OPTIONS, seedOption } from "../shared/options";
 
 // The defaults here are a desktop's; a phone's come with each `options.get` below.
 const options = defineOptions({
@@ -62,10 +64,9 @@ const options = defineOptions({
   mist: { kind: "number", label: "Mist", help: "How thick the weather's fog is, times the engine's.", min: 0, max: 4, step: 0.1, default: 0.8, live: true },
   view: { kind: "number", label: "View distance", help: "Metres to the fog wall, where every ray stops.", min: 8, max: 40, step: 2, default: 24 },
   fireflies: { kind: "number", label: "Fireflies", help: "Each is an unshadowed point light with a halo (12 on a phone).", min: 0, max: 28, step: 2, default: 24 },
-  temporal: { kind: "toggle", label: "Temporal accumulation", help: "Shadows and AO accumulate over frames; off traces them in full every frame. Not on the Low preset.", default: true },
-  reflections: { kind: "toggle", label: "Reflections", help: "Metal and glass trace their secondary rays.", default: false },
-  upscale: { kind: "number", label: "Traced fraction", help: "Trace at this fraction of the output and resolve to it over frames (experimental; a phone adapts it unless set).", min: 0.25, max: 1, step: 0.25, default: 1 },
-  renderScale: { kind: "number", label: "Fixed render scale", help: "A fixed render scale instead of the adaptive one; 0 for adaptive.", min: 0, max: 2, step: 0.1, default: 0 },
+  // The renderer's own, as on every page; here temporal is on by default and reflections off,
+  // and they apply by reloading (the phone's adaptive traced fraction is set up once, at load).
+  ...RENDER_OPTIONS,
   trees: { kind: "number", label: "Tree density", help: "0 to 1, for measuring what the scene costs.", min: 0, max: 1, step: 0.1, default: 1 },
   shrubs: { kind: "number", label: "Shrub density", help: "0 to 1.", min: 0, max: 1, step: 0.1, default: 1 },
   plants: { kind: "number", label: "Ground plant density", help: "0 to 1.", min: 0, max: 1, step: 0.1, default: 1 },
@@ -79,7 +80,7 @@ const options = defineOptions({
 const seed = hashSeed(options.get("seed"));
 
 /**
- * Coarse first, one swap (../shared/detail.ts), per device. On: at 50 and 100 vox/m the first
+ * Coarse first, one swap (../shared/detail.ts), per device. On: at 50 vox/m the first
  * picture shows every model built at 10 vox/m and drawn enlarged, and the fine models are then
  * generated, uploaded and baked in the background and swapped in at once. That is a second
  * generation, upload and bake running while the user is already in the scene: on a desktop it
@@ -89,7 +90,7 @@ const seed = hashSeed(options.get("seed"));
 const COARSE_FIRST = { desktop: true, phone: false };
 
 // The loading screen's rows, in this order (phases not listed are not shown, but stay on the
-// tracker for window.loadTimeline and ?perf). At 50 and 100 vox/m the rows before the first
+// tracker for window.loadTimeline and ?perf). At 50 vox/m the rows before the first
 // picture are the coarse stage's, and the fine stage streams on in the corner pill; the list is
 // set once the scale is known (it depends on the GPU: a phone gets 20).
 const loadingSteps = (coarse: boolean) => [
@@ -174,7 +175,7 @@ if (app) {
   };
   const all = [...KINDS.trees, ...KINDS.bushes, ...KINDS.ground, KINDS.house];
 
-  // Coarse first (at 50 and 100): the 10 vox/m models, which the generators make in a fraction of
+  // Coarse first (at 50): the 10 vox/m models, which the generators make in a fraction of
   // the time, drawn KC times enlarged; the fine ones are generated after them on the same workers
   // and swapped in once encoded and baked (../shared/detail.ts). At 20 the fine models come first.
   const staged = stagedLoad(load);
@@ -204,20 +205,22 @@ if (app) {
   const { base: groundBase } = palette.allocate(buildRoles(), "terrain");
   const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
-  const quality = gpu.software ? "low" : phone ? "medium" : "high";
+  const quality = options.get("quality", gpu.software ? "low" : phone ? "medium" : "high");
   // The view distance bounds every primary ray (about 1.7 steps per voxel of it at worst).
   // Shadows and AO accumulate over frames (?temporal=0 for one ray per pixel per frame): the shadow
   // rays are half of this page's frame without it. It needs the compute path, and is skipped otherwise.
-  const temporal = quality !== "low" && options.get("temporal");
+  const temporal = quality !== "low" && options.get("temporal", true);
   // No reflection or refraction rays (?reflections=1 for them): from where the camera stands they
   // only reach the cabin's door handle and gutter, and compiled out the frame is a fifth cheaper.
-  const reflections = options.get("reflections");
+  const reflections = options.get("reflections", false);
   // ?upscale=0.5: trace at that fraction of the output and resolve to it over frames (needs temporal).
   // On a phone the adaptive controller drives it instead (below): the output keeps its size and
   // the traced fraction follows the frame time.
   const autoUpscale = phone && temporal && !options.given("upscale") && !FIXED_SCALE;
   const upscale = options.get("upscale", autoUpscale ? 0.5 : 1);
   renderer.setQuality({ ...QUALITY_PRESETS[quality], maxSteps: gpu.software ? 768 : 1024, shadowSteps: quality === "low" ? 0 : 128, temporal, reflections, upscale });
+  if (options.get("debug")) renderer.setDebug(options.get("debug"));
+  options.on("debug", (v) => renderer.setDebug(v));
   if (gpu.software) gpu.renderScale = Math.min(gpu.renderScale, 0.3);
   else if (phone) gpu.renderScale = Math.min(gpu.renderScale, 0.6);
   // deferPipelines above: compile what the frames use (instances: the wood is not placed yet)

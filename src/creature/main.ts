@@ -14,8 +14,8 @@
 // engine only animates and stamps.
 //
 // URL options (declared below; the HUD's Options panel changes them): ?count= the rats (1-40,
-// default 8), ?seed=, ?perf (the overlay, and the load timeline in the console), ?e2e (hooks for
-// the input tests).
+// default 8), ?seed=, the renderer's own as on every page (?quality=, ?temporal=1, ?upscale=, ?reflections=0, ?renderScale=, ?debug=),
+// ?perf (the overlay, and the load timeline in the console), ?e2e (hooks for the input tests).
 
 import {
   createRenderer,
@@ -52,11 +52,13 @@ import { generateCreature, PRESETS, ROLE } from "@voxolith/gen-creature";
 import { boot, runLoop } from "../shared/boot";
 import { markFrames, prepared, reportLoadTimeline, step } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
-import { defineOptions, OPTION, seedOption } from "../shared/options";
+import { defineOptions, OPTION, RENDER_OPTIONS, seedOption } from "../shared/options";
+import { applyRenderOptions } from "../shared/quality";
 
 const options = defineOptions({
   count: { kind: "number", label: "Rats", help: "How many rats roam the patch.", min: 1, max: 40, step: 1, integer: true, default: 8 },
   seed: seedOption("rats"),
+  ...RENDER_OPTIONS,
   perf: OPTION.perf,
   e2e: OPTION.e2e,
 });
@@ -96,7 +98,7 @@ if (app) {
 
   const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
-  renderer.setQuality(gpu.software ? "low" : "medium");
+  const render = applyRenderOptions(options, renderer, { preset: gpu.software ? "low" : "medium", changed: () => loop.invalidate() });
   // deferPipelines above: compile while the ground goes in (the rats are stamped, so no instance
   // variants), and await it before the first frame.
   const compiled = prepared(renderer.prepare({ instances: false }));
@@ -366,7 +368,7 @@ if (app) {
     stats = stamper.commit();
 
     perf.frame(now);
-    gpu.renderScale = perf.scale();
+    gpu.renderScale = render.fixedScale() || perf.scale();
     resizeToDisplay(gpu);
     renderer.render({ ...frame(), ...sky, time: now / 1000 });
   }, true);

@@ -17,8 +17,9 @@
 //
 // URL options (declared below; the HUD's Options panel changes them: time, weather and ?still at
 // once, the rest by reloading): ?scale= the valley's size in tiles (1-8, default 4), ?seed=,
-// ?season=, ?time=night, ?weather=, ?variants= the models per species (default 10), ?radius= the
-// streamed radius in voxels (default: the whole valley), ?still, ?perf; and for tools, not in the
+// ?season=, ?time=night, ?weather=, ?sky=physical (the engine's physical sky), ?variants= the models per species (default 10), ?radius= the
+// streamed radius in voxels (default: the whole valley), ?still, ?perf, and the renderer's own, as on every page:
+// ?quality=, ?temporal=1, ?upscale=, ?reflections=0, ?renderScale=, ?debug=; and for tools, not in the
 // panel: ?workers=0 (generate on this thread), ?selftest=, ?e2e.
 
 import {
@@ -51,6 +52,7 @@ import {
   atmosphereFrame,
   ATMOSPHERES,
   classicSky,
+  makePhysicalSky,
   makeAtmosphereTransition,
   timeOfDay,
   type AtmosphereName,
@@ -62,7 +64,8 @@ import { markFrames, nextFrame, prepared, reportLoadTimeline, step } from "../sh
 import { STEPS } from "../shared/loading-screen";
 import { groundFill } from "../shared/ground";
 import { terrainOffThread } from "../shared/terrain";
-import { defineOptions, OPTION, seedOption } from "../shared/options";
+import { defineOptions, OPTION, RENDER_OPTIONS, seedOption } from "../shared/options";
+import { applyRenderOptions } from "../shared/quality";
 import { VALLEY_OPTIONS } from "./options";
 
 // One tile is 320 voxels square; `scale` lays out SPANxSPAN of them.
@@ -73,6 +76,7 @@ const options = defineOptions({
   radius: { kind: "number", label: "Streamed radius", help: "Voxels of ground kept around the view; the default covers the whole valley.", min: 0, max: 100000, step: 160, default: 1920 },
   still: { kind: "toggle", label: "Still water", help: "Freeze the water and render only when something changes.", default: false, live: true },
   seed: seedOption("voxolith"),
+  ...RENDER_OPTIONS,
   perf: OPTION.perf,
   workers: { kind: "toggle", label: "Workers", help: "Generate models and fill the ground on workers.", default: true, hidden: true },
   selftest: OPTION.selftest,
@@ -130,15 +134,21 @@ if (app) {
   const { base: s0 } = palette.allocate(settlement, "settlement");
   const PATH = s0, PATH2 = s0 + 1, YARD = s0 + 2;
 
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
+  // ?sky=physical: the engine's physically based sky as the renderer's background, and the
+  // scene's light from the same model; the default is its stylised classic sky.
+  const physical = options.get("sky") === "physical" ? await makePhysicalSky(gpu) : null;
+  const airFrame: typeof atmosphereFrame = physical ? (l, a, o) => physical.frame(l, a, o) : atmosphereFrame;
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: physical?.background ?? classicSky });
   // ?selftest: bands showing which stage of the voxel lookup works on this GPU.
   if (options.given("selftest")) { const st = options.get("selftest"); renderer.setDebug(st === "3" ? 9 : st === "2" ? 8 : 7); }
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
-  const quality = gpu.software ? "low" : "medium";
-  renderer.setQuality({
-    ...QUALITY_PRESETS[quality],
-    maxSteps: Math.min(4096, QUALITY_PRESETS[quality].maxSteps * SPAN),
+  // The step cap grows with the valley: a ray may cross all of it.
+  const render = applyRenderOptions(options, renderer, {
+    preset: gpu.software ? "low" : "medium",
+    tweak: (preset) => ({ maxSteps: Math.min(4096, QUALITY_PRESETS[preset].maxSteps * SPAN) }),
+    changed: () => loop.invalidate(),
   });
+  const quality = render.preset();
   // deferPipelines above: the pipelines compile now, while the models generate (this page stamps
   // everything into the world, so no instance variants), and the loop draws nothing until they
   // are ready: a frame before that would compile them synchronously.
@@ -210,16 +220,17 @@ if (app) {
     if (!compiledYet) return;
     streamWorld?.();
     perf.frame(now);
-    gpu.renderScale = perf.scale();
+    gpu.renderScale = render.fixedScale() || perf.scale();
     resizeToDisplay(gpu);
     if (spin) orbit.set({ yaw: orbit.yaw() + dt * 3.2 });
     if (phase < phaseTarget) phase = Math.min(phaseTarget, phase + dt * (0.5 / TRANSITION_S));
     loop.setContinuous(wantContinuous());
     const sky = weather.update(dt);
     stepGround(dt);
-    const atm = atmosphereFrame(timeOfDay(phase), { ...sky, wetness, cover: snowCover });
+    const atm = airFrame(timeOfDay(phase), { ...sky, wetness, cover: snowCover });
     renderer.render({ ...frame(), ...atm, time: still ? 0 : now / 1000 });
-  }, true);
+    // ?still with temporal accumulation: keep drawing until it has settled.
+  }, true, () => renderer.converging());
   observeResize(canvas, loop);
   input.on((e) => {
     if (e.kind !== "pointer" || e.phase !== "down" || !spin) return;
@@ -286,7 +297,7 @@ if (app) {
 
   // --- the settlement ----------------------------------------------------------------
   // Houses, levelled pads, footpaths and what grows where: ./layout.ts, shared
-  // with the valley page (50 or 100 voxels per metre).
+  // with the valley page (the same valley at up to 50 voxels per metre).
   const valley = layoutValley({ terrain, span: SPAN, seed, season, models, pools, sites });
   const { houses } = valley;
   const maxY = terrain.maxY();

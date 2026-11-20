@@ -2,7 +2,7 @@
 // the engine's orbit controller: drag to turn, wheel or pinch to zoom,
 // right-drag or two fingers to pan.
 
-import { createRenderer, OccupancyGrid, makeCamera, observeResize, resizeToDisplay } from "@voxolith/renderer";
+import { createRenderer, makeCamera, observeResize, resizeToDisplay } from "@voxolith/renderer";
 import { createInput, makeOrbitController, prepareSurface } from "@voxolith/engine/input";
 import { trackRenderer } from "@voxolith/engine";
 import { boot, runLoop } from "../shared/boot";
@@ -49,7 +49,8 @@ if (app) {
   // switch, declared hidden, so this page has no Options button.
   const options = defineOptions({ selftest: OPTION.selftest });
   if (options.given("selftest")) { const st = options.get("selftest"); renderer.setDebug(st === "3" ? 9 : st === "2" ? 8 : 7); }
-  renderer.updateCoarse(new OccupancyGrid(size, data).data);
+  // A CPU adapter (SwiftShader) starts on the Low preset: no shadows or ambient occlusion.
+  if (gpu.software) renderer.setQuality("low");
   renderer.setFloor({ enabled: true, y: 0, colorA: [0.3, 0.32, 0.36], colorB: [0.24, 0.26, 0.3] });
 
   // Nothing animates here, so render on demand: the loop only draws when

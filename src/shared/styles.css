@@ -14,6 +14,8 @@ html, body {
   box-shadow: var(--shadow);
 }
 #hud a { color: var(--link); text-decoration: none; }
+/* The bar's fixed parts keep their size; the info line takes what is left and wraps. */
+#hud .panel > .brand, #hud .panel > button, #hud .panel > select { flex: none; white-space: nowrap; }
 #hud #info { color: var(--text-muted); }
 #hud .time-toggle {
   font: inherit; color: var(--text); background: var(--control); border: 1px solid var(--border);

@@ -1,9 +1,9 @@
 // Coarse first, one swap: how valley and nightwood show a scene before its fine models exist.
 //
 // Every entity generator builds the same design at 10 voxels per metre (natively, the fastest)
-// and finer (20, 50, 100), with the same extent and anchor, and the finer model stays within one
-// native voxel of the native one. So a page at 50 or 100 vox/m first places the 10 vox/m models,
-// each drawn 5 or 10 times enlarged (the engine's `EntityPlacement.scale`, the renderer's scaled
+// and finer (20 to 50), with the same extent and anchor, and the finer model stays within one
+// native voxel of the native one. So a page at 50 vox/m first places the 10 vox/m models,
+// each drawn 5 times enlarged (the engine's `EntityPlacement.scale`, the renderer's scaled
 // models), shows that, and generates, encodes and bakes the fine set in the background. The
 // instance layer keeps the coarse set drawing until the fine set's bake applies, then releases
 // the coarse models (`setStatic` + `commitAsync` in one task), so the swap is one frame.
@@ -32,11 +32,12 @@ export const COARSE_VPM = 10;
  * The factor the coarse models are drawn enlarged by at `vpm`, or 1 for no coarse stage.
  *
  * `enabled` is the page's own choice (its `COARSE_FIRST` switch for this device). Even then only
- * 50 and 100 vox/m get one (factors 5 and 10). At 20 the factor would be 2: the fine models
- * there cost about a tenth of those at 50 and the page is up in about 2 s warm, most of it the
- * terrain and ground, which a coarse stage does not shorten; a second upload and bake would only
- * add work. The URL overrides both: `?coarse=0` turns the stage off, `?coarse=1` on at any scale
- * that is a multiple of 10 (at 20 too, factor 2), to compare or to test it on a phone.
+ * 50 vox/m (the finest scale the pages offer) gets one, factor 5. At 20 the factor would be 2:
+ * the fine models there cost about a tenth of those at 50 and the page is up in about 2 s warm,
+ * most of it the terrain and ground, which a coarse stage does not shorten; a second upload and
+ * bake would only add work. 30 and 40 lie between and were not measured, so they load in one
+ * stage too. At 10 there is nothing coarser to show. The URL overrides both: `?coarse=0` turns the stage off, `?coarse=1` on at any scale
+ * above 10 (at 20 too, factor 2), to compare or to test it on a phone.
  */
 export function coarseFactor(vpm: number, asked: "auto" | "0" | "1", enabled: boolean): number {
   const on = asked === "1" ? true : asked === "0" ? false : enabled && vpm >= 50;
@@ -45,7 +46,7 @@ export function coarseFactor(vpm: number, asked: "auto" | "0" | "1", enabled: bo
 
 /** The `?coarse=` option of the pages with a coarse stage, to spread into their declarations. */
 export const coarseOption = {
-  kind: "choice", label: "Coarse first", help: "Show the scene with 10 vox/m models drawn enlarged, then swap the fine ones in. Auto: at 50 and 100 on a desktop.",
+  kind: "choice", label: "Coarse first", help: "Show the scene with 10 vox/m models drawn enlarged, then swap the fine ones in. Auto: at 50 on a desktop.",
   values: ["auto", "0", "1"], default: "auto", format: (v: string) => ({ auto: "Auto", "0": "Off", "1": "On" })[v] ?? v,
 } as const;
 

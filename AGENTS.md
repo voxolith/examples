@@ -20,7 +20,7 @@ Siblings needed: renderer, engine, generators.
 
 ## Map
 
-- `src/shared/boot.ts`: `boot(name, { blurb, steps })` (device, canvas, HUD, software warning,
+- `src/shared/boot.ts`: `boot(name, { blurb, steps })` (device, canvas, HUD, the Options button,
   and the page's load tracker `load` with its loading screen `screen`) and `runLoop`. Every page
   reports its load into `load` (`trackRenderer`, the pool, layer and chunked world, app phases)
   and calls `screen.ready()` once it has drawn; minecraft-region passes `{ loading: false }` and
@@ -74,11 +74,11 @@ Siblings needed: renderer, engine, generators.
   `void worker.destroy()` (valley and nightwood after the fine swap, or the first placement), so nothing waits for the
   writes. A counted row shows
   `n cached`; a `count: false` row shows `cached` or `30% cached`.
-- `src/shared/detail.ts`: coarse first, one swap (valley and nightwood at 50 and 100 vox/m, on a
+- `src/shared/detail.ts`: coarse first, one swap (valley and nightwood at 50 vox/m, on a
   desktop). Opt-in, the piece an app would copy: each page decides with its `COARSE_FIRST =
   { desktop: true, phone: false }` switch (the fine stage is a second generation, upload and bake
   while the user is in the scene, which lags a phone), and with a factor of 1 nothing else in the
-  module runs. `coarseFactor(vpm, params, enabled)` (5 or 10; 1 when not enabled, at 20, or with
+  module runs. `coarseFactor(vpm, asked, enabled)` (5 at 50; 1 when not enabled, below 50, or with
   `?coarse=0`; `?coarse=1` forces it, at 20 too with factor 2), `stagedLoad(load)` (a
   tracker for the pool and the layer that files the fine stage's `models`, `upload` and
   `placement` under `fine.*`), `COARSE_STEPS` / `FINE_STEPS` (the rows; the fine ones are
@@ -105,7 +105,8 @@ Siblings needed: renderer, engine, generators.
   terrain's roles from `buildRoles`, which need no heights).
 - `src/shared/scale.ts`: the voxel scale of `valley` and `nightwood`: `isPhone` (the phone
   profile test, `phoneDevice` without `?full`) and `vpmOption` (the pages' `?vpm=` declaration:
-  20, 50 or 100, anything else snapped; the page gives the default, 50, or 20 on a phone).
+  10, 20, 30, 40 or 50 on every page that has one, anything else snapped, so `?vpm=100` gives 50;
+  valley and nightwood default to 50, or 20 on a phone, bench to 20, rigged to 10).
 - `src/shared/options.ts`: **a page's URL options, declared once** (`defineOptions({ key: { kind,
   label, help, default, ... } })`, kinds `toggle`, `choice`, `number`, `text`). The page reads
   them through it (`options.get(key, deviceDefault?)`, `given`), passes it to `boot(name, {
@@ -113,16 +114,25 @@ Siblings needed: renderer, engine, generators.
   narrow or touch screen. `live: true` plus `options.on(key, fn)` applies a change at once and
   rewrites the query in place; everything else is staged and applied by "Apply and reload". A
   HUD control or key for the same option calls `options.sync(key, value)`. `hidden: true` keeps a
-  developer switch (`?e2e`, `?hold=`) out of the panel. Never read `location.search` in a page:
+  developer switch (`?e2e`, `?hold=`) out of the panel. Shared declarations live there too:
+  `OPTION` (perf, full, e2e, selftest), `seedOption` and `RENDER_OPTIONS` (quality, temporal,
+  upscale, reflections, renderScale, debug: the renderer's knobs, with the same names and help on
+  every page).
+- `src/shared/quality.ts`: `applyRenderOptions(options, renderer, { preset, tweak, changed })`
+  reads `RENDER_OPTIONS`, sets the renderer's quality (the page gives its device preset and its
+  scene's step caps) and applies the panel's changes live, compiling a new pipeline variant before
+  switching to it. Every page with a panel uses it (nightwood, temporal and bench read the same
+  declarations with logic of their own); a page draws at `render.fixedScale() || perf.scale()`. Never read `location.search` in a page:
   add the option to its declaration, and to its header comment and docs page.
 - `src/world/layout.ts`: the shared valley design (terrain, sites, houses, pads, paths,
-  scatter). `world` (10 vox/m) and `valley` (50 vox/m by default, 20 on a phone, 100 with
-  `?vpm=100`) both read it; change the layout there, never in one page. The valley's rats only
-  appear where gen-creature's `realSizeAt` holds (100 vox/m); `?rats=N` forces them.
+  scatter). `world` (10 vox/m) and `valley` (50 vox/m by default, 20 on a phone, 10 to 50 with
+  `?vpm=`) both read it; change the layout there, never in one page. The valley's rats only
+  appear by default where gen-creature's `realSizeAt` holds (from about 84 vox/m, so at none of
+  the scales offered); `?rats=N` forces them, and the HUD says why there are none.
 - `src/world/gen.worker.ts`: the shared generator worker. It caches models in IndexedDB in
   production builds (`serveGenerators({ cache })`, salted by the worker's hashed URL).
-- `src/nightwood/`: first person in a night forest at 50 vox/m (20 on a phone, 100 with
-  `?vpm=100`), with fog as the view distance
+- `src/nightwood/`: first person in a night forest at 50 vox/m (20 on a phone, 10 to 50 with
+  `?vpm=`), with fog as the view distance
   (`fog.distance`). This is the lighting showcase the renderer's roadmap is measured against.
 
 ## Rules for pages
@@ -153,10 +163,11 @@ Siblings needed: renderer, engine, generators.
   - `makeOrbitController` / `makeLookController` for cameras;
   - `recogniseGestures` for taps, `makeActions` for game controls, `makeTouchControls` for
     on-screen sticks.
+- **Software adapters.** Every page starts on the Low preset when `gpu.software` is set, and the
+  heavy ones cap `gpu.renderScale` (0.3) or use `makePerf` with `minScale: 0.25`.
 - **Render on demand.** Use `makeFrameLoop`: `invalidate()` on camera, scene or viewport changes,
   and `setContinuous(true)` only while something animates (water on screen counts). Quality is
-  the engine's presets behind a select stored as `voxolith-quality`. Software adapters
-  (`gpu.software`) warn and start on Low.
+  the engine's presets, offered as `?quality=` in the Options panel (`RENDER_OPTIONS`).
 - **Branding.** `src/brand/tokens.css` and `src/brand/theme.ts` are generated copies from the
   private `branding` repo: never edit them here. Use the tokens (`--bg`, `--surface`,
   `--accent`, ...), never hex colours in CSS. Dark is the default theme.

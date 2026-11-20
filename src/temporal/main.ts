@@ -30,6 +30,9 @@
 //   ?renderScale=0.5     fixed render scale, 0.1-1 (default 0.8; 0.5 on a phone, 0.3 on a CPU adapter)
 //   ?quality=medium      low | medium | high (default medium; low on a CPU adapter, where temporal has
 //                        nothing to accumulate, so pass ?quality=medium to exercise it there)
+//   ?upscale=0.5         with temporal on: trace at this fraction of the output and resolve to it
+//   ?reflections=0       compile the materials' secondary rays out
+//   ?debug=10            the renderer's step heatmap (1: the walk without empty-space skipping)
 //   ?angle=0.02          the moon's angular radius in radians (soft shadow edges with temporal on)
 //   ?time=0.1            time of day, 0 midnight to 0.5 noon (default 0.1, night with the moon 34° up;
 //                        0.98 is nightwood's higher moon; by day the sun and sky are the engine's own)
@@ -64,14 +67,17 @@ import { boot } from "../shared/boot";
 import { markFrames, nextFrame, prepared, reportLoadTimeline, step } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
 import { isPhone, phoneDevice } from "../shared/scale";
-import { defineOptions, OPTION, seedOption } from "../shared/options";
+import { defineOptions, OPTION, RENDER_OPTIONS, seedOption } from "../shared/options";
 
 const options = defineOptions({
-  temporal: { kind: "toggle", label: "Temporal accumulation", help: "Keep shadows and AO per pixel across frames and stop tracing them once converged (T).", default: false, live: true },
+  temporal: { ...RENDER_OPTIONS.temporal, help: "Keep shadows and AO per pixel across frames and stop tracing them once converged (T)." },
   rotate: { kind: "toggle", label: "Rotate", help: "Turn the camera, to read what a moving view costs.", default: false, live: true },
   always: { kind: "toggle", label: "Redraw always", help: "Draw every frame even when nothing changes, to read what a still frame costs.", default: false, live: true },
-  renderScale: { kind: "number", label: "Render scale", help: "The fixed fraction of the canvas that is rendered (0.5 on a phone, 0.3 on a CPU adapter).", min: 0.1, max: 1, step: 0.1, default: 0.8, live: true },
-  quality: { kind: "choice", label: "Quality", help: "The renderer's preset. Low has no shadows or AO, so nothing to accumulate.", values: ["low", "medium", "high"], default: "medium" },
+  renderScale: { ...RENDER_OPTIONS.renderScale, min: 0.1, max: 1, default: 0.8, help: "The fixed fraction of the canvas that is rendered (0.5 on a phone, 0.3 on a CPU adapter)." },
+  upscale: RENDER_OPTIONS.upscale,
+  reflections: RENDER_OPTIONS.reflections,
+  quality: { ...RENDER_OPTIONS.quality, live: false },
+  debug: RENDER_OPTIONS.debug,
   angle: { kind: "number", label: "Moon size", help: "The moon's angular radius in radians: soft shadow edges with temporal on.", min: 0, max: 0.2, step: 0.005, default: 0.02, live: true },
   time: { kind: "number", label: "Time of day", help: "0 midnight to 0.5 noon; 0.1 is night with the moon 34° up.", min: 0, max: 1, step: 0.05, default: 0.1, live: true },
   ambient: { kind: "number", label: "Sky light", help: "A multiple of the engine's own for that time; lower gives darker shadows.", min: 0, max: 4, step: 0.25, default: 1, live: true },
@@ -183,7 +189,8 @@ if (app) {
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   const quality: QualityPreset = options.get("quality", gpu.software ? "low" : "medium");
   let temporal = options.get("temporal");
-  renderer.setQuality({ ...QUALITY_PRESETS[quality], temporal });
+  renderer.setQuality({ ...QUALITY_PRESETS[quality], temporal, upscale: options.get("upscale"), reflections: options.get("reflections") });
+  if (options.get("debug")) renderer.setDebug(options.get("debug"));
   // Temporal accumulates the shadows and AO; the Low preset has neither.
   const canAccumulate = QUALITY_PRESETS[quality].shadowSteps > 0 || QUALITY_PRESETS[quality].ao;
   gpu.renderScale = Math.max(0.1, Math.min(1, options.get("renderScale", gpu.software ? 0.3 : phone ? 0.5 : gpu.renderScale)));
@@ -299,6 +306,10 @@ if (app) {
   options.on("always", setAlways);
   options.on("angle", setAngle);
   options.on("renderScale", (v) => { gpu.renderScale = v; sinceToggle = 0; loop.invalidate(); });
+  // The other knobs of the renderer, as on every page; each restarts the measuring burst.
+  options.on("upscale", (upscale) => { renderer.setQuality({ upscale }); sinceToggle = 0; loop.invalidate(); });
+  options.on("reflections", (reflections) => { renderer.setQuality({ reflections }); sinceToggle = 0; loop.invalidate(); });
+  options.on("debug", (v) => { renderer.setDebug(v); sinceToggle = 0; loop.invalidate(); });
   const relight = () => { sky = lighting(options.get("time"), options.get("ambient")); sinceToggle = 0; loop.invalidate(); };
   options.on("time", relight);
   options.on("ambient", relight);

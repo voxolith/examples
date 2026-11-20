@@ -1,8 +1,8 @@
 // hello-vox: the smallest useful @voxolith/renderer program.
-// Fetch a .vox → dense grid → renderer + occupancy grid → render each frame
+// Fetch a .vox → dense grid → renderer → render each frame
 // with a slowly rotating orbit camera.
 
-import { createRenderer, OccupancyGrid, makeCamera, parseVox, resizeToDisplay } from "@voxolith/renderer";
+import { createRenderer, makeCamera, parseVox, resizeToDisplay } from "@voxolith/renderer";
 import { trackRenderer } from "@voxolith/engine";
 import { boot, runLoop } from "../shared/boot";
 import { markFrames, prepared, reportLoadTimeline, step } from "../shared/loading";
@@ -32,10 +32,10 @@ if (app) {
     return { model, grid: modelToGrid(model) };
   });
 
-  // 2. Create the renderer for this grid and give it the coarse occupancy
-  //    grid so rays skip empty space.
+  // 2. Create the renderer for this grid: it keeps the voxels as sparse bricks,
+  //    so rays skip empty space on their own. A CPU adapter (SwiftShader) starts on the Low preset: no shadows or ambient occlusion.
   const renderer = await createRenderer(gpu, grid, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
-  renderer.updateCoarse(new OccupancyGrid(grid.size, grid.data).data);
+  if (gpu.software) renderer.setQuality("low");
   renderer.setFloor({ enabled: true, y: 0, colorA: [0.22, 0.23, 0.27], colorB: [0.17, 0.18, 0.21] });
 
   // 3. A camera factory: call it with a yaw each frame to get camera vectors.

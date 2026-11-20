@@ -1,7 +1,7 @@
-// bench — one fixed, deterministic scene for measuring the renderer, at 10 to 100 voxels per metre.
+// bench — one fixed, deterministic scene for measuring the renderer, at 10 to 50 voxels per metre.
 //
 // Not a showcase: a test scene small enough to build in a few seconds at 20 voxels per metre and
-// still tolerable at 100, which takes every expensive path the renderer has, so one run at each
+// still quick at 50, which takes every expensive path the renderer has, so one run at each
 // scale settles whether a renderer change is faster or slower (the workspace's render-bench tool
 // drives it). A 40 m square of ground at dusk holds:
 //   - a dense patch of instanced wood: oak, birch and spruce with bushes, bracken and grass;
@@ -13,7 +13,7 @@
 //   - fog with a view distance (fog.distance), so every primary ray stops within 32 m;
 //   - a dynamic set: four small stones circling the pond;
 //   - six rats posed on the GPU (makeCrowd rigged), walking a circle by the pond. They are sized
-//     with gen-creature's atScale whatever the scale, so below 100 voxels per metre they are
+//     with gen-creature's atScale whatever the scale, so at every scale offered they are
 //     larger than life: this page is a test, not a scene.
 //
 // Nothing depends on the clock: the seed is fixed, nothing calls Math.random, and whatever moves
@@ -22,21 +22,23 @@
 // render scale is fixed (no makePerf) and every frame is drawn. Every length is in metres, so the
 // scene is the same at every scale. There is no phone profile: it runs as asked everywhere.
 //
-// The scales are 10, 20, 30, 40, 50 and 100, a list of this page's own for the resolution sweep
-// (valley and nightwood offer 20, 50 and 100, ../shared/scale.ts). 10 is the generators' native
+// The scales are 10, 20, 30, 40 and 50, as on every page (../shared/scale.ts); anything else
+// snaps to the nearest, so ?vpm=100 gives 50. 10 is the generators' native
 // scale: the models come dense and unrefined; the ground still goes through refineTerrain, at
 // factor 1, so it has the same blades and pebbles as at every other scale.
 //
 // URL options (declared below; the HUD's Options panel changes them: the view, the render scale
 // and the quality at once, the scale and ?anim by reloading; ?e2e, ?hold and ?batch are for
 // tools and are not in the panel):
-//   ?vpm=10|20|30|40|50|100  voxels per metre (default 20; anything else snaps to the nearest)
+//   ?vpm=10|20|30|40|50  voxels per metre (default 20; anything else snaps to the nearest)
 //   ?view=0..3|all  the camera: 0 inside the wood, 1 across the open ground, 2 close on the cottage
 //                   and the pond, 3 up at the treetops and the sky (default 0; `all` starts at 0,
 //                   and bench.setView() with no argument steps to the next)
 //   ?renderScale=   the fixed render scale (default 0.5)
 //   ?quality=       low, medium or high (default high; low on a CPU adapter); maxSteps is 1024 in
 //                   every preset, since fog.distance bounds the rays
+//   ?temporal=1, ?upscale=, ?reflections=0, ?debug=   the renderer's other knobs, as on every page
+//                   (off by default here: the presets as they are)
 //   ?anim=1         move things by the wall clock instead of the frame counter
 //   ?e2e            expose window.bench (below), for tools
 //   ?hold=N         advance the motion N frames (stones, rats, water), then hold it there while
@@ -93,15 +95,19 @@ import { atScale, generateCreature, PRESETS as RATS } from "@voxolith/gen-creatu
 import { boot, runLoop } from "../shared/boot";
 import { markFrames, nextFrame, prepared, reportLoadTimeline } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
-import { defineOptions, OPTION } from "../shared/options";
+import { defineOptions, OPTION, RENDER_OPTIONS } from "../shared/options";
+import { voxelSize, vpmOption } from "../shared/scale";
 
 const tStart = performance.now();
 const options = defineOptions({
-  // This page's own scales (see the header), not ../shared/scale.ts's.
-  vpm: { kind: "choice", label: "Voxels per metre", help: "The scene's resolution; every model is generated for it.", values: [10, 20, 30, 40, 50, 100], default: 20, snap: true, format: (v: number) => `${v} (${+(100 / v).toFixed(1)} cm voxels)` },
+  vpm: { ...vpmOption, default: 20 },
   view: { kind: "choice", label: "View", help: "The fixed camera: in the wood, across the open ground, close on the pond, up at the treetops.", values: [0, 1, 2, 3, "all"], default: 0, snap: true, live: true, format: (v: number | string) => (v === "all" ? "All (starts at 0)" : ["0: in the wood", "1: open ground", "2: cottage and pond", "3: treetops and sky"][v as number]) },
-  renderScale: { kind: "number", label: "Render scale", help: "The fixed fraction of the canvas that is rendered.", min: 0.1, max: 2, step: 0.1, default: 0.5, live: true },
-  quality: { kind: "choice", label: "Quality", help: "The renderer's preset (maxSteps is 1024 in each).", values: ["low", "medium", "high"], default: "high", live: true },
+  renderScale: { ...RENDER_OPTIONS.renderScale, min: 0.1, default: 0.5, help: "The fixed fraction of the canvas that is rendered." },
+  quality: { ...RENDER_OPTIONS.quality, default: "high", help: "The renderer's preset (maxSteps is 1024 in each)." },
+  temporal: RENDER_OPTIONS.temporal,
+  upscale: RENDER_OPTIONS.upscale,
+  reflections: RENDER_OPTIONS.reflections,
+  debug: RENDER_OPTIONS.debug,
   anim: { kind: "toggle", label: "Wall-clock motion", help: "Move things by the clock instead of a fixed step per drawn frame.", default: false },
   hold: { kind: "number", label: "Hold at frame", help: "Advance the motion this many frames, then hold it there.", min: 0, max: 1e6, step: 60, integer: true, default: 0, hidden: true },
   batch: { kind: "number", label: "Measure batch", help: "Frames bench.measure() draws between waits for the GPU.", min: 1, max: 64, step: 1, integer: true, default: 3, hidden: true },
@@ -130,7 +136,7 @@ if (app) {
   const { gpu, canvas, info, load: tracker, screen } = app;
   const VPM = options.get("vpm");
   const title = document.querySelector("#hud .brand small");
-  if (title) title.textContent = `bench · ${+(100 / VPM).toFixed(1)} cm voxels`;
+  if (title) title.textContent = `bench · ${voxelSize(VPM)} voxels`;
   /** Metres to voxels at this resolution. */
   const m = (metres: number) => metres * VPM;
   const K = VPM / 10;
@@ -138,7 +144,9 @@ if (app) {
   const ANIM = options.get("anim");
   const HOLD = options.get("hold");
   let PRESET: QualityPreset = options.get("quality", gpu.software ? "low" : "high");
-  const START_QUALITY: RenderQuality = { ...QUALITY_PRESETS[PRESET], maxSteps: 1024 };
+  /** The preset with this page's step cap and the panel's temporal, upscale and reflections (the presets' own by default). */
+  const pageQuality = (preset: QualityPreset): RenderQuality => ({ ...QUALITY_PRESETS[preset], maxSteps: 1024, temporal: options.get("temporal"), upscale: options.get("upscale"), reflections: options.get("reflections") });
+  const START_QUALITY: RenderQuality = pageQuality(PRESET);
   const VIEWS = 4;
   const view0 = options.get("view");
   let view: number = view0 === "all" ? 0 : view0;
@@ -496,7 +504,10 @@ if (app) {
   // The panel's live options. The hook's setView and setQuality do not go through them.
   options.on("view", (v) => { view = v === "all" ? 0 : v; report(); loop.invalidate(); });
   options.on("renderScale", (v) => { RENDER_SCALE = v; loop.invalidate(); });
-  options.on("quality", (q) => { PRESET = q; renderer.setQuality({ ...QUALITY_PRESETS[q], maxSteps: 1024 }); report(); loop.invalidate(); });
+  const requality = () => { PRESET = options.get("quality"); renderer.setQuality(pageQuality(PRESET)); report(); loop.invalidate(); };
+  for (const key of ["quality", "temporal", "upscale", "reflections"] as const) options.on(key, requality);
+  if (options.get("debug")) renderer.setDebug(options.get("debug"));
+  options.on("debug", (v) => { renderer.setDebug(v); loop.invalidate(); });
 
   if (options.get("e2e")) {
     Object.assign(window, {

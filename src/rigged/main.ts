@@ -8,8 +8,12 @@
 // be compared directly. The baked side also closes diagonal gaps and cracks; the GPU side welds
 // joints only.
 //
-// ?vpm=100 uses rats sized for a 100 voxels-per-metre world (smaller, finer); ?yaw= turns them;
-// ?pairs= shows only the first few clips; ?distance= sets the camera distance. The options are
+// ?vpm= (10, 20, 30, 40 or 50; anything else snaps to the nearest) picks the rat: at 10, the
+// default, gen-creature's stylised preset (size 1.2); at 20 to 50 the rat as atScale sizes it for
+// a world at that scale, which at all of them is the smallest that keeps two-voxel legs (size
+// 0.7; a rat is only real size from about 84 voxels per metre), so those four look alike. ?yaw= turns them;
+// ?pairs= shows only the first few clips; ?distance= sets the camera distance; the renderer's own
+// knobs are here as on every page (?quality=, ?temporal=1, ?upscale=, ?reflections=0, ?renderScale=, ?debug=). The options are
 // declared below, and the HUD's Options panel changes them.
 //
 // Posing on the GPU from a shared rest model follows Gruen, Benthin, Kern and McAllister, "Ray
@@ -27,13 +31,16 @@ import { atScale, generateCreature, PRESETS } from "@voxolith/gen-creature";
 import { boot, runLoop } from "../shared/boot";
 import { markFrames, prepared, reportLoadTimeline, step } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
-import { defineOptions } from "../shared/options";
+import { defineOptions, RENDER_OPTIONS } from "../shared/options";
+import { applyRenderOptions } from "../shared/quality";
+import { vpmOption } from "../shared/scale";
 
 const options = defineOptions({
-  vpm: { kind: "number", label: "Voxels per metre", help: "The world scale the rats are sized for: at 100 they are smaller and finer.", min: 10, max: 250, step: 10, default: 10 },
+  vpm: { ...vpmOption, default: 10, help: "The world scale the rat is sized for. 10: the stylised preset. 20 to 50: the smallest rat with two-voxel legs (atScale), the same at each." },
   pairs: { kind: "number", label: "Pairs", help: "Show only the first few clips, one baked and one GPU-posed rat each.", min: 1, max: 99, step: 1, integer: true, default: 99 },
   yaw: { kind: "number", label: "Heading", help: "The rats' yaw, in radians.", min: -6.3, max: 6.3, step: 0.35, default: 0.35 },
   distance: { kind: "number", label: "Camera distance", help: "How far the camera starts, in voxels.", min: 20, max: 600, step: 10, default: 230 },
+  ...RENDER_OPTIONS,
 });
 const vpm = options.get("vpm");
 const yaw = options.get("yaw");
@@ -70,10 +77,11 @@ if (app) {
   const ratBase = palette.allocate(rat.model.roles, "rat").base;
   const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
-  renderer.setQuality(gpu.software ? "low" : "high");
+  const render = applyRenderOptions(options, renderer, { preset: gpu.software ? "low" : "high", changed: () => loop.invalidate() });
   // A software adapter (SwiftShader) takes seconds for a full-size frame of posed rats, and the
   // page redraws continuously: draw at under a third of the size, as valley and nightwood do.
   if (gpu.software) gpu.renderScale = Math.min(gpu.renderScale, 0.3);
+  const ownScale = gpu.renderScale;
   renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: 3, z1: SIZE.z - 1 }, (cells, ox, oy) => {
     for (let z = 0; z < 8; z++) for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++)
       if (oy + y <= 3) cells[x + y * 8 + z * 64] = groundBase + (((ox + x) % PAIR) < GAP ? 0 : 1);
@@ -120,6 +128,7 @@ if (app) {
     posed.update(right, cam);
     layer.setDynamic([...leftLayer.list, ...rightLayer.list]);
     layer.commit();
+    gpu.renderScale = render.fixedScale() || ownScale;
     resizeToDisplay(gpu);
     renderer.render({ ...f, ...sky, time: now / 1000 });
   }, true);

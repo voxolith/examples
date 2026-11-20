@@ -94,9 +94,11 @@ export async function boot(appName: string, opts: BootOptions): Promise<Booted |
  * Frame loop built on the engine's render-on-demand loop. `continuous: true`
  * (the default here) renders every frame, for examples that animate; pass
  * `false` and call `loop.invalidate()` when something changes instead.
+ * `converging` (usually `() => renderer.converging()`) keeps an on-demand loop drawing while
+ * temporal accumulation settles.
  */
-export function runLoop(frame: (now: number, dt: number) => void, continuous = true): FrameLoop {
-  return makeFrameLoop({ render: frame, continuous });
+export function runLoop(frame: (now: number, dt: number) => void, continuous = true, converging?: () => boolean): FrameLoop {
+  return makeFrameLoop({ render: frame, continuous, converging });
 }
 
 /**

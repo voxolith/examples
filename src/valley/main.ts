@@ -1,18 +1,19 @@
-// valley — the world page's valley at 20, 50 or 100 voxels per metre, down to a rat's-eye scale.
+// valley — the world page's valley at 10 to 50 voxels per metre, as instances on streamed ground.
 //
 // The same valley as ../world: its terrain, river, village, footpaths and
 // forest come from the same layout (../world/layout.ts), decided in the
-// world page's 10 voxels per metre and multiplied by two, five or ten here.
+// world page's 10 voxels per metre and multiplied by up to five here.
 // What changes is the resolution:
-//   - every model is generated at 20 (5 cm voxels, a phone's default), 50
-//     (2 cm, the desktop default) or 100 voxels per metre (1 cm): the
-//     generators refine their own design (single leaves and needles, bark
-//     furrows, bricks, tiles and mortar at real size, rounded rock), as
-//     sparse models;
+//   - every model is generated at 10 (the generators' native scale, 10 cm
+//     voxels: the world page's own models), 20 (5 cm, a phone's default),
+//     30, 40 or 50 voxels per metre (2 cm, the desktop default): above 10
+//     the generators refine their own design (single leaves and needles,
+//     bark furrows, bricks, tiles and mortar, rounded rock), as sparse
+//     models;
 //   - models are drawn as instances, once each on the GPU however often they
 //     stand in the valley, at the layout's exact orientations;
-//   - at 50 and 100 the valley shows first with every model built at 10 voxels
-//     per metre and drawn 5 or 10 times enlarged; the fine models are generated
+//   - at 50 the valley shows first with every model built at 10 voxels
+//     per metre and drawn 5 times enlarged; the fine models are generated
 //     in the background and swapped in at once (../shared/detail.ts; on a
 //     desktop only, switched per device by COARSE_FIRST below);
 //   - the terrain is refined per brick (a smooth surface, grass blades,
@@ -20,33 +21,38 @@
 //     of centimetre voxels does not fit in memory at once; its height map is
 //     sampled and its chunks are filled on workers
 //     (../shared/terrain.ts, ../shared/ground.ts);
-//   - rats roam the village as an instanced crowd, but only at a scale where
-//     they come out at their real size (gen-creature's realSizeAt: 1 cm
-//     voxels, 100 vox/m). At 50 or 20 a rat's legs would be under two voxels
-//     thick at real size, so it would have to be built larger than life
-//     (0.86 m long at 50, 2.15 m at 20); the page leaves them out instead.
+//   - rats can roam the village as an instanced crowd, but by default only
+//     at a scale where they come out at their real size (gen-creature's
+//     realSizeAt: from about 84 vox/m), which none of the scales offered
+//     here reaches: a rat's legs would be under two voxels thick at real
+//     size, so it has to be built larger than life (0.86 m long at 50,
+//     2.15 m at 20). So there are none unless ?rats= (the panel's Rats)
+//     asks for them, and the HUD says why.
 //
 // URL options (declared below; the HUD's Options panel changes them: time
 // and weather at once, the rest by reloading):
-//   ?vpm=20|50|100 the voxels per metre (default 50, 20 on a phone; anything
-//               else snaps to the nearest), ?scale= the valley
+//   ?vpm=10|20|30|40|50 the voxels per metre (default 50, 20 on a phone;
+//               anything else snaps to the nearest, so ?vpm=100 gives 50),
+//               ?scale= the valley
 //               size as on the world page (default 4), ?variants= the models
 //               per species (default 3; the world page uses 10, which matches
-//               it exactly but needs over a gigabyte of GPU memory at 100),
-//               ?rats= the crowd (default 60 where rats are real size, none
-//               elsewhere; ?rats=N forces a crowd of N at any scale, larger
-//               than life below 100, for testing), ?radius= the streamed
+//               it exactly but costs several times the GPU memory),
+//               ?rats= the crowd (default none: see above; ?rats=N forces
+//               a crowd of N, larger than life), ?radius= the streamed
 //               radius in metres (default 24), ?near= the ground in metres
 //               the first picture waits for (default 18), ?coarse=0|1 the
 //               coarse stage off, or on at any scale and on a phone
-//               (default on at 50 and 100 on a desktop),
-//               ?seed=, ?season=, ?time=night, ?weather=, ?rigged (rats posed
+//               (default on at 50 on a desktop),
+//               ?seed=, ?season=, ?time=night, ?weather=, ?sky=physical
+//               (the engine's physical sky), ?quality=, ?temporal=1,
+//               ?upscale=, ?reflections=0, ?renderScale=, ?debug= (the
+//               renderer's own, as on every page), ?rigged (rats posed
 //               on the GPU), ?perf (the overlay, and the load timeline in the
 //               console), ?full (desktop settings on a phone), ?e2e (hooks for
 //               the input tests).
 // A phone (a touch-only pointer, or storage bindings under 512 MiB) gets a
-// lighter profile: 20 voxels per metre, scale 2, one variant, 20 rats (at
-// 100 only), a 16 m radius, the Low preset and no coarse stage; every
+// lighter profile: 20 voxels per metre, scale 2, one variant, a 16 m
+// radius, the Low preset and no coarse stage; every
 // option above still applies on its own.
 // Drag the lamp (or double-tap), N for night, W for weather, as on the
 // world page.
@@ -57,7 +63,6 @@ import {
   makePerf,
   makeRay,
   observeResize,
-  QUALITY_PRESETS,
   resizeToDisplay,
   type PointLight,
   type Renderer,
@@ -80,7 +85,7 @@ import {
 import { makeAnimator, makeCrowd, type CrowdMember } from "@voxolith/engine/animation";
 import { makeGeneratorPool, type GeneratorPool } from "@voxolith/engine/worker";
 import { createInput, makeOrbitController, prepareSurface, recogniseGestures } from "@voxolith/engine/input";
-import { approach, atmosphereFrame, ATMOSPHERES, classicSky, makeAtmosphereTransition, timeOfDay, type AtmosphereName } from "@voxolith/engine/atmosphere";
+import { approach, atmosphereFrame, ATMOSPHERES, classicSky, makeAtmosphereTransition, makePhysicalSky, timeOfDay, type AtmosphereName } from "@voxolith/engine/atmosphere";
 import { buildRoles, fineTerrainInit, refineTerrain } from "@voxolith/gen-terrain";
 import { atScale, generateCreature, minVoxelsPerMetre, PRESETS as RATS, realSizeAt } from "@voxolith/gen-creature";
 import { layoutValley, paletteKey, TILE, valleySites, valleySpecies, valleyTerrainParams, workerSeed, type Season } from "../world/layout";
@@ -91,22 +96,24 @@ import { terrainOffThread } from "../shared/terrain";
 import { commitStatic, sceneWorker } from "../shared/placement";
 import { STEPS, type LoadingStep } from "../shared/loading-screen";
 import { COARSE_STEPS, COARSE_VPM, coarseFactor, coarseOption, FINE_STEPS, stagedLoad, swapToFine } from "../shared/detail";
-import { isPhone, phoneDevice, SCALES, voxelSize, vpmOption } from "../shared/scale";
-import { defineOptions, OPTION, seedOption } from "../shared/options";
+import { isPhone, phoneDevice, voxelSize, vpmOption } from "../shared/scale";
+import { defineOptions, OPTION, RENDER_OPTIONS, seedOption } from "../shared/options";
+import { applyRenderOptions } from "../shared/quality";
 import { VALLEY_OPTIONS } from "../world/options";
 
 // The defaults here are a desktop's; a phone's come with each `options.get` below.
 const options = defineOptions({
   vpm: vpmOption,
   scale: { kind: "number", label: "Valley size", help: "Tiles of 32 m along each side, as on the world page.", min: 1, max: 8, step: 1, integer: true, default: 4 },
-  variants: { kind: "number", label: "Models per species", help: "More variety costs GPU memory: 10 needs over a gigabyte at 100 vox/m.", min: 1, max: 10, step: 1, default: 3 },
-  rats: { kind: "number", label: "Rats", help: "The crowd in the village. By default only where rats come out real size (100 vox/m); a number forces them, larger than life below that.", min: 0, max: 400, step: 10, default: 0 },
+  variants: { kind: "number", label: "Models per species", help: "More variety costs GPU memory, several times as much at 10 as at 3.", min: 1, max: 10, step: 1, default: 3 },
+  rats: { kind: "number", label: "Rats", help: "The crowd in the village. None by default: a rat is only real size from about 84 vox/m, more than this page offers. A number adds them anyway, larger than life (0.86 m long at 50).", min: 0, max: 400, step: 10, default: 0 },
   rigged: { kind: "toggle", label: "Pose rats on the GPU", help: "One rest model per variant, posed by the renderer, instead of baked poses.", default: false },
   ...VALLEY_OPTIONS,
   radius: { kind: "number", label: "Streamed radius", help: "Metres of ground kept around the view.", min: 8, max: 256, step: 4, default: 24 },
   near: { kind: "number", label: "Ground before the first picture", help: "Metres of ground around the view that the loading screen waits for.", min: 0, max: 256, step: 2, default: 18 },
   coarse: coarseOption,
   seed: seedOption("voxolith"),
+  ...RENDER_OPTIONS,
   perf: OPTION.perf,
   full: OPTION.full,
   e2e: OPTION.e2e,
@@ -115,7 +122,7 @@ const seed = hashSeed(options.get("seed"));
 const season: Season = options.get("season");
 
 /**
- * Coarse first, one swap (../shared/detail.ts), per device. On: at 50 and 100 vox/m the first
+ * Coarse first, one swap (../shared/detail.ts), per device. On: at 50 vox/m the first
  * picture shows every model built at 10 vox/m and drawn enlarged, and the fine models are then
  * generated, uploaded and baked in the background and swapped in at once. That is a second
  * generation, upload and bake running while the user is already in the scene: on a desktop it
@@ -128,7 +135,7 @@ const COARSE_FIRST = { desktop: true, phone: false };
  * The loading screen's rows, in this order (phases not listed are not shown, but stay on the
  * tracker for window.loadTimeline and ?perf). The rats' row only where there are rats, which
  * depends on the scale, which depends on the GPU (a phone): so boot shows the list without it,
- * and the page sets it once it knows. So does the coarse stage (at 50 and 100 vox/m): then the
+ * and the page sets it once it knows. So does the coarse stage (at 50 vox/m): then the
  * rows before the first picture are its steps, and the fine models are generated, uploaded and
  * placed after it, in the corner pill. The ground streams on after the first picture too.
  */
@@ -160,10 +167,9 @@ if (app) {
   // settings; every setting below can still be given on its own.
   if (!phoneDevice(gpu)) options.hide("full");
   const phone = isPhone(gpu, options.get("full"));
-  // 50 voxels per metre (2 cm) by default, 20 (5 cm) on a phone; 100 (1 cm)
-  // is still too heavy for a desktop GPU. Changing it (?vpm=, in the Options
+  // 50 voxels per metre (2 cm) by default, 20 (5 cm) on a phone. Changing it (?vpm=, in the Options
   // panel) reloads, since every model is generated for its scale.
-  /** Voxels per metre here (20, 50 or 100), and the factor over the world page's 10. */
+  /** Voxels per metre here (10 to 50), and the factor over the world page's 10 (1 to 5). */
   const VPM = options.get("vpm", phone ? 20 : 50);
   const title = document.querySelector("#hud .brand small");
   if (title) title.textContent = `valley · ${voxelSize(VPM)} voxels`;
@@ -174,14 +180,14 @@ if (app) {
   const COARSE = { x: TILE * SPAN, y: 192, z: TILE * SPAN };
   const SIZE = { x: COARSE.x * K, y: COARSE.y * K, z: COARSE.z * K };
   const VARIANTS = options.get("variants", phone ? 1 : 3);
-  // Rats only where every variant comes out at its real size (100 vox/m of
-  // the three), unless ?rats= asks for them anyway.
+  // Rats only where every variant comes out at its real size (from about 84 vox/m: none of
+  // the scales offered), unless ?rats= asks for them anyway.
   const RAT_KINDS = ["rat", "grey rat", "lab rat", "black rat"];
   const ratsReal = RAT_KINDS.every((k) => realSizeAt(RATS[k], VPM));
   const RAT_COUNT = options.get("rats", ratsReal ? (phone ? 20 : 60) : 0);
-  /** The HUD's note when rats were left out: the coarsest scale at which they are real size. */
-  const ratScale = SCALES.find((s) => RAT_KINDS.every((k) => s >= minVoxelsPerMetre(RATS[k])));
-  const ratsNote = !RAT_COUNT && !options.given("rats") && ratScale ? `rats at ${voxelSize(ratScale)}` : `${RAT_COUNT} rats`;
+  /** The HUD's note when rats were left out: the scale from which they are real size, and how to get them anyway. */
+  const ratScale = Math.ceil(Math.max(...RAT_KINDS.map((k) => minVoxelsPerMetre(RATS[k]))));
+  const ratsNote = !RAT_COUNT && !options.given("rats") ? `no rats (real size needs ${ratScale} voxels/m; Options adds them)` : `${RAT_COUNT} rats`;
   /**
    * Metres of ground around the view's target that the first picture waits for. The first view
    * looks down on the village from 26 m and reaches nearly to the streamed edge, so it needs most
@@ -202,7 +208,7 @@ if (app) {
 
   // --- the models, on workers ------------------------------------------------------------
   // Asked for first, so the workers generate (or read their cache) while this thread shapes the
-  // terrain. Coarse first (at 50 and 100 on a desktop): every species at 10 vox/m, drawn KC times enlarged,
+  // terrain. Coarse first (at 50 on a desktop): every species at 10 vox/m, drawn KC times enlarged,
   // then the fine ones on the same workers, swapped in once encoded and baked
   // (../shared/detail.ts). At 20 the fine models come first; only the houses are asked for at 10
   // too, since the layout measures them (footprint, door) at its own scale. The pool's phases are
@@ -261,15 +267,21 @@ if (app) {
     task.end();
   }
 
+  // ?sky=physical: the engine's physically based sky as the renderer's background, and the
+  // scene's light from the same model; the default is its stylised classic sky.
+  const physical = options.get("sky") === "physical" ? await makePhysicalSky(gpu) : null;
+  const airFrame: typeof atmosphereFrame = physical ? (l, a, o) => physical.frame(l, a, o) : atmosphereFrame;
   // --- renderer ---------------------------------------------------------------------
   // deferPipelines: nothing is compiled until `prepare` below, so the whole compile is awaited
   // (and timed as the "pipelines" step) instead of stalling the first frame.
-  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
+  const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: physical?.background ?? classicSky });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
-  const quality = gpu.software || phone ? "low" : "medium";
   // Rays cross thousands of voxels of air here; the 64-voxel skip keeps
   // that cheap, but the step caps have to allow for the canopy and the ground.
-  renderer.setQuality({ ...QUALITY_PRESETS[quality], maxSteps: gpu.software || phone ? 768 : 2048, shadowSteps: quality === "low" ? 0 : 320 });
+  const render = applyRenderOptions(options, renderer, {
+    preset: gpu.software || phone ? "low" : "medium",
+    tweak: (preset) => ({ maxSteps: gpu.software || phone ? 768 : 2048, shadowSteps: preset === "low" ? 0 : 320 }),
+  });
   // A CPU adapter would take many seconds over the first full-size frame
   // before the scale controller reacts, so it starts small.
   if (gpu.software) gpu.renderScale = Math.min(gpu.renderScale, 0.3);
@@ -329,7 +341,7 @@ if (app) {
   const [vx, vz] = [sites.VC[0] * K, sites.VC[1] * K];
   const start: [number, number] = night0 ? [sites.GC[0] * K, sites.GC[1] * K] : [vx, vz];
   world.focus(start[0], start[1], RADIUS, RADIUS * 1.3);
-  /** The first stage's models: coarse at 50 and 100, fine at 20. */
+  /** The first stage's models: coarse with a coarse stage (at 50), else the fine ones. */
   const first = KC > 1 ? houses : await fine;
   // The static scenery's models are encoded and the set baked on a worker (commitAsync below), so
   // the page keeps painting.
@@ -492,13 +504,13 @@ if (app) {
     if (crowd) crowd.update(members, f.camPos as [number, number, number]);
     else layer.commit();
     perf.frame(now);
-    gpu.renderScale = perf.scale();
+    gpu.renderScale = render.fixedScale() || perf.scale();
     resizeToDisplay(gpu);
     if (spin) orbit.set({ yaw: orbit.yaw() + dt * 2.4 });
     if (phase < phaseTarget) phase = Math.min(phaseTarget, phase + dt * (0.5 / TRANSITION_S));
     const sky = weather.update(dt);
     stepGround(dt);
-    const atm = atmosphereFrame(timeOfDay(phase), { ...sky, wetness, cover: snowCover }, { voxelsPerMetre: VPM });
+    const atm = airFrame(timeOfDay(phase), { ...sky, wetness, cover: snowCover }, { voxelsPerMetre: VPM });
     const fog = atm.fog && atm.fog.density > edgeFog ? atm.fog : { density: edgeFog, color: atm.skyHorizon, heightFalloff: 0 };
     renderer.render({ ...f, ...atm, fog, time: now / 1000 });
   }, true);

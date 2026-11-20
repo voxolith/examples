@@ -3,7 +3,7 @@
 // a first-person camera. No region file is bundled; grab one from any world's
 // `region/` folder.
 
-import { createRenderer, OccupancyGrid, buildMinecraftRegion, firstPersonFrame, resizeToDisplay, type Renderer } from "@voxolith/renderer";
+import { createRenderer, buildMinecraftRegion, firstPersonFrame, resizeToDisplay, type Renderer } from "@voxolith/renderer";
 import { axis, button, createInput, makeActions, makeLookController, makeTouchControls, prepareSurface } from "@voxolith/engine/input";
 import { makeLoadTracker, trackRenderer } from "@voxolith/engine";
 import { boot, runLoop } from "../shared/boot";
@@ -64,7 +64,8 @@ if (app) {
       const r = await createRenderer(gpu, {
         size: scene.size, data: scene.data, palette: scene.palette, materials: scene.materials,
       }, { onLoad: trackRenderer(tracker), deferPipelines: true, background: classicSky });
-      r.updateCoarse(new OccupancyGrid(scene.size, scene.data).data);
+      // A CPU adapter (SwiftShader) starts on the Low preset: no shadows or ambient occlusion.
+      if (gpu.software) r.setQuality("low");
       // deferPipelines: compile before the loop draws it.
       await prepared(r.prepare());
       renderer = r;

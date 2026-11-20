@@ -156,6 +156,27 @@ export const OPTION = {
   selftest: { kind: "text", label: "Lookup self-test", help: "Bands showing which stage of the voxel lookup works on this GPU (1, 2 or 3).", default: "", hidden: true },
 } as const satisfies Record<string, OptionSpec>;
 
+/**
+ * The renderer's cost and quality knobs, under the same names and help on every page that offers
+ * them: spread into the page's declaration and hand the options to `applyRenderOptions`
+ * (./quality.ts), which reads them, sets the renderer's quality and applies changes live. A page
+ * with a fixed render scale (bench, temporal) spreads `renderScale` with its own range.
+ */
+export const RENDER_OPTIONS = {
+  /** `?quality=low|medium|high`: `QUALITY_PRESETS`; the page gives the device's default. */
+  quality: { kind: "choice", label: "Quality", help: "The renderer's preset: low has no shadows or ambient occlusion, high traces the longest rays.", values: ["low", "medium", "high"], default: "medium", live: true, format: (v: string) => v[0].toUpperCase() + v.slice(1) },
+  /** `?temporal=1`: `RenderQuality.temporal`. */
+  temporal: { kind: "toggle", label: "Temporal accumulation", help: "Keep shadows and ambient occlusion per pixel across frames and trace them only until they have converged; shadows turn soft. Nothing to accumulate on the low preset.", default: false, live: true },
+  /** `?upscale=0.5`: `RenderQuality.upscale`. */
+  upscale: { kind: "number", label: "Traced fraction", help: "With temporal accumulation on: trace at this fraction of the output size and resolve to it over frames.", min: 0.25, max: 1, step: 0.25, default: 1, live: true },
+  /** `?reflections=0`: `RenderQuality.reflections`. */
+  reflections: { kind: "toggle", label: "Reflections", help: "Water, metal and glass trace their secondary rays. Off compiles them out, which makes every pixel cheaper.", default: true, live: true },
+  /** `?renderScale=0.5`: a fixed `gpu.renderScale`; 0 leaves it to the page (adaptive where it has `makePerf`). */
+  renderScale: { kind: "number", label: "Render scale", help: "A fixed fraction of the canvas to render; 0 lets the page pick, and adapt it to the frame time where it does.", min: 0, max: 2, step: 0.1, default: 0, live: true },
+  /** `?debug=10|1`: `Renderer.setDebug`. */
+  debug: { kind: "choice", label: "Debug view", help: "The renderer's own views: how many steps each primary ray took (blue few, red the cap), or the walk without empty-space skipping.", values: [0, 10, 1], default: 0, live: true, format: (v: number) => (v === 10 ? "Step heatmap" : v === 1 ? "No skipping" : "Off") },
+} as const satisfies Record<string, OptionSpec>;
+
 /** `?seed=`: the text every random choice on the page derives from. */
 export const seedOption = (name: string) =>
   ({ kind: "text", label: "Seed", help: "Any text; the same seed builds the same scene.", default: name }) as const satisfies TextOption;
