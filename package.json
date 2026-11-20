@@ -29,10 +29,10 @@
     "@voxolith/renderer": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^26.6.2",
+    "@types/node": "^26.6.6",
     "@vitejs/plugin-basic-ssl": "^2.3.0",
     "@webgpu/types": "^0.1.74",
     "typescript": "^7.0.2",
-    "vite": "^8.3.0"
+    "vite": "^8.3.8"
   }
 }

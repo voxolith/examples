@@ -211,7 +211,7 @@ if (app) {
   const coarse = generate(COARSE_VPM, KC > 1 ? undefined : isHouse);
   if (KC > 1) staged.fine("models");
   const fine = generate(VPM);
-  void fine.then(() => console.log(`[valley] ${species.reduce((n, sp) => n + sp.count, 0)} models at ${VPM} vox/m in ${((performance.now() - t0) / 1000).toFixed(1)} s`));
+  if (params.has("perf")) void fine.then(() => console.log(`[valley] ${species.reduce((n, sp) => n + sp.count, 0)} models at ${VPM} vox/m in ${((performance.now() - t0) / 1000).toFixed(1)} s`));
   // Not awaited: destroying lets the workers finish their cache writes.
   void fine.finally(() => void workers.destroy()).catch(() => {});
 
