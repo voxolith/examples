@@ -1,4 +1,4 @@
-// bench — one fixed, deterministic scene for measuring the renderer, at 20, 50 or 100 voxels per metre.
+// bench — one fixed, deterministic scene for measuring the renderer, at 10 to 100 voxels per metre.
 //
 // Not a showcase: a test scene small enough to build in a few seconds at 20 voxels per metre and
 // still tolerable at 100, which takes every expensive path the renderer has, so one run at each
@@ -22,8 +22,15 @@
 // render scale is fixed (no makePerf) and every frame is drawn. Every length is in metres, so the
 // scene is the same at every scale. There is no phone profile: it runs as asked everywhere.
 //
-// URL options:
-//   ?vpm=20|50|100  voxels per metre (default 20; anything else snaps to the nearest)
+// The scales are 10, 20, 30, 40, 50 and 100, a list of this page's own for the resolution sweep
+// (valley and nightwood offer 20, 50 and 100, ../shared/scale.ts). 10 is the generators' native
+// scale: the models come dense and unrefined; the ground still goes through refineTerrain, at
+// factor 1, so it has the same blades and pebbles as at every other scale.
+//
+// URL options (declared below; the HUD's Options panel changes them: the view, the render scale
+// and the quality at once, the scale and ?anim by reloading; ?e2e, ?hold and ?batch are for
+// tools and are not in the panel):
+//   ?vpm=10|20|30|40|50|100  voxels per metre (default 20; anything else snaps to the nearest)
 //   ?view=0..3|all  the camera: 0 inside the wood, 1 across the open ground, 2 close on the cottage
 //                   and the pond, 3 up at the treetops and the sky (default 0; `all` starts at 0,
 //                   and bench.setView() with no argument steps to the next)
@@ -35,6 +42,7 @@
 //   ?hold=N         advance the motion N frames (stones, rats, water), then hold it there while
 //                   frames keep being drawn: every load of every build then shows the same
 //                   picture, so GPU time compares frame for frame (render-bench passes 120)
+//   ?batch=N        frames bench.measure() draws between waits for the GPU (default 3)
 //   ?diag           the adapter's limits in the HUD (shared/boot.ts)
 //
 // window.bench, with ?e2e:
@@ -42,8 +50,11 @@
 //   setView(i?: number): void           one of the four views (none: the next one)
 //   frames(n): Promise<void>            resolves once n more frames have been drawn and the GPU
 //                                       has finished them
-//   stats(): { vpm, view, fps, gpuMs, width, height, models, instances,
+//   stats(): { vpm, view, fps, gpuMs, width, height, models, instances, bytes,
 //              loadMs: { generate, upload, place, ground, pipelines, total } }
+//                                       bytes is renderer.stats().bytes: the GPU's voxel memory
+//                                       (both brick pools at their capacity, world and models, and
+//                                       the index buffer); not the frame textures or small buffers
 //   setDebug(v: number): void           renderer.setDebug
 //   setQuality(patch | null): void      renderer.setQuality(patch); null restores the page's own
 //                                       starting quality (its preset plus maxSteps 1024)
@@ -82,12 +93,21 @@ import { atScale, generateCreature, PRESETS as RATS } from "@voxolith/gen-creatu
 import { boot, runLoop } from "../shared/boot";
 import { markFrames, nextFrame, prepared, reportLoadTimeline } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
-import { pickScale, voxelSize } from "../shared/scale";
+import { defineOptions, OPTION } from "../shared/options";
 
 const tStart = performance.now();
-const params = new URLSearchParams(location.search);
+const options = defineOptions({
+  // This page's own scales (see the header), not ../shared/scale.ts's.
+  vpm: { kind: "choice", label: "Voxels per metre", help: "The scene's resolution; every model is generated for it.", values: [10, 20, 30, 40, 50, 100], default: 20, snap: true, format: (v: number) => `${v} (${+(100 / v).toFixed(1)} cm voxels)` },
+  view: { kind: "choice", label: "View", help: "The fixed camera: in the wood, across the open ground, close on the pond, up at the treetops.", values: [0, 1, 2, 3, "all"], default: 0, snap: true, live: true, format: (v: number | string) => (v === "all" ? "All (starts at 0)" : ["0: in the wood", "1: open ground", "2: cottage and pond", "3: treetops and sky"][v as number]) },
+  renderScale: { kind: "number", label: "Render scale", help: "The fixed fraction of the canvas that is rendered.", min: 0.1, max: 2, step: 0.1, default: 0.5, live: true },
+  quality: { kind: "choice", label: "Quality", help: "The renderer's preset (maxSteps is 1024 in each).", values: ["low", "medium", "high"], default: "high", live: true },
+  anim: { kind: "toggle", label: "Wall-clock motion", help: "Move things by the clock instead of a fixed step per drawn frame.", default: false },
+  hold: { kind: "number", label: "Hold at frame", help: "Advance the motion this many frames, then hold it there.", min: 0, max: 1e6, step: 60, integer: true, default: 0, hidden: true },
+  batch: { kind: "number", label: "Measure batch", help: "Frames bench.measure() draws between waits for the GPU.", min: 1, max: 64, step: 1, integer: true, default: 3, hidden: true },
+  e2e: OPTION.e2e,
+});
 const seed = hashSeed("bench");
-const num = (key: string, fallback: number) => (params.has(key) && Number.isFinite(Number(params.get(key))) ? Number(params.get(key)) : fallback);
 
 // The loading screen's rows, in this order (phases not listed are not shown, but stay on the
 // tracker for window.loadTimeline and ?perf).
@@ -102,25 +122,26 @@ const app = await boot("bench", {
     STEPS.ground,
     STEPS.placement,
   ],
+  options,
 });
 if (app) {
   // `tracker` is boot's load tracker, shown by its loading screen (`load` below is the bench's own
   // coarse timing, reported in window.bench.stats()).
   const { gpu, canvas, info, load: tracker, screen } = app;
-  const VPM = pickScale(params, false, 20);
+  const VPM = options.get("vpm");
   const title = document.querySelector("#hud .brand small");
-  if (title) title.textContent = `bench · ${voxelSize(VPM)} voxels`;
+  if (title) title.textContent = `bench · ${+(100 / VPM).toFixed(1)} cm voxels`;
   /** Metres to voxels at this resolution. */
   const m = (metres: number) => metres * VPM;
   const K = VPM / 10;
-  const RENDER_SCALE = Math.max(0.1, Math.min(2, num("renderScale", 0.5)));
-  const ANIM = params.get("anim") === "1";
-  const HOLD = Math.max(0, Math.round(num("hold", 0)));
-  const askedQuality = params.get("quality");
-  const PRESET: QualityPreset = askedQuality === "low" || askedQuality === "medium" || askedQuality === "high" ? askedQuality : gpu.software ? "low" : "high";
+  let RENDER_SCALE = options.get("renderScale");
+  const ANIM = options.get("anim");
+  const HOLD = options.get("hold");
+  let PRESET: QualityPreset = options.get("quality", gpu.software ? "low" : "high");
   const START_QUALITY: RenderQuality = { ...QUALITY_PRESETS[PRESET], maxSteps: 1024 };
   const VIEWS = 4;
-  let view = params.get("view") === "all" ? 0 : Math.max(0, Math.min(VIEWS - 1, Math.round(num("view", 0))));
+  const view0 = options.get("view");
+  let view: number = view0 === "all" ? 0 : view0;
   const load = { generate: 0, upload: 0, place: 0, ground: 0, pipelines: 0, total: 0 };
 
   // --- the design, at 10 voxels per metre ------------------------------------------------------
@@ -468,12 +489,16 @@ if (app) {
   };
   const report = () => {
     const g = gpuMs();
-    info.textContent = `${VPM} vox/m · view ${view}${params.get("view") === "all" ? " (all)" : ""} · ${PRESET} · ${Number.isFinite(g) ? `${g.toFixed(2)} ms GPU` : "no GPU timings"} · ${fps().toFixed(0)} fps`;
+    info.textContent = `${VPM} vox/m · view ${view}${view0 === "all" ? " (all)" : ""} · ${PRESET} · ${Number.isFinite(g) ? `${g.toFixed(2)} ms GPU` : "no GPU timings"} · ${fps().toFixed(0)} fps`;
   };
   setInterval(report, 1000);
   report();
+  // The panel's live options. The hook's setView and setQuality do not go through them.
+  options.on("view", (v) => { view = v === "all" ? 0 : v; report(); loop.invalidate(); });
+  options.on("renderScale", (v) => { RENDER_SCALE = v; loop.invalidate(); });
+  options.on("quality", (q) => { PRESET = q; renderer.setQuality({ ...QUALITY_PRESETS[q], maxSteps: 1024 }); report(); loop.invalidate(); });
 
-  if (params.has("e2e")) {
+  if (options.get("e2e")) {
     Object.assign(window, {
       bench: {
         ready: () => drawn > 0,
@@ -491,7 +516,7 @@ if (app) {
           // are throttled to one a second.
           const settle = async () => { for (let k = 0; k < 4; k++) await gpu.device.queue.onSubmittedWorkDone(); };
           // Three at a time (the GPU timer reads back three frames at once), then wait for the GPU.
-          const BATCH = Math.max(1, Math.round(num("batch", 3)));
+          const BATCH = options.get("batch");
           const frames = async (k: number) => {
             for (let f = 0; f < k; f += BATCH) {
               for (let b = 0; b < BATCH && f + b < k; b++) draw(performance.now());
@@ -519,7 +544,7 @@ if (app) {
           const st = renderer.instanceStats();
           return {
             vpm: VPM, view, fps: fps(), gpuMs: renderer.gpuTimings(), width: gpu.width, height: gpu.height,
-            models: st.models, instances: st.instances, loadMs: { ...load },
+            models: st.models, instances: st.instances, bytes: renderer.stats().bytes, loadMs: { ...load },
           };
         },
         setDebug(v: number) { renderer.setDebug(v); loop.invalidate(); },

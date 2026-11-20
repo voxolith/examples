@@ -14,6 +14,12 @@
 // into night and back. The water ripples, so the page renders continuously
 // (`?still` freezes it and renders on demand). `?perf` shows the perf overlay
 // and logs the load timeline to the console.
+//
+// URL options (declared below; the HUD's Options panel changes them: time, weather and ?still at
+// once, the rest by reloading): ?scale= the valley's size in tiles (1-8, default 4), ?seed=,
+// ?season=, ?time=night, ?weather=, ?variants= the models per species (default 10), ?radius= the
+// streamed radius in voxels (default: the whole valley), ?still, ?perf; and for tools, not in the
+// panel: ?workers=0 (generate on this thread), ?selftest=, ?e2e.
 
 import {
   createRenderer,
@@ -56,15 +62,28 @@ import { markFrames, nextFrame, prepared, reportLoadTimeline, step } from "../sh
 import { STEPS } from "../shared/loading-screen";
 import { groundFill } from "../shared/ground";
 import { terrainOffThread } from "../shared/terrain";
+import { defineOptions, OPTION, seedOption } from "../shared/options";
+import { VALLEY_OPTIONS } from "./options";
 
 // One tile is 320 voxels square; `scale` lays out SPANxSPAN of them.
-const params = new URLSearchParams(location.search);
-const SPAN = Math.max(1, Math.min(8, Math.round(Number(params.get("scale") ?? 4))));
+const options = defineOptions({
+  scale: { kind: "number", label: "Valley size", help: "Tiles of 32 m along each side.", min: 1, max: 8, step: 1, integer: true, default: 4 },
+  ...VALLEY_OPTIONS,
+  variants: { kind: "number", label: "Models per species", help: "How many different trees, bushes and rocks of each kind are generated.", min: 1, max: 16, step: 1, default: 10 },
+  radius: { kind: "number", label: "Streamed radius", help: "Voxels of ground kept around the view; the default covers the whole valley.", min: 0, max: 100000, step: 160, default: 1920 },
+  still: { kind: "toggle", label: "Still water", help: "Freeze the water and render only when something changes.", default: false, live: true },
+  seed: seedOption("voxolith"),
+  perf: OPTION.perf,
+  workers: { kind: "toggle", label: "Workers", help: "Generate models and fill the ground on workers.", default: true, hidden: true },
+  selftest: OPTION.selftest,
+  e2e: OPTION.e2e,
+});
+const SPAN = options.get("scale");
 const SIZE = { x: TILE * SPAN, y: 192, z: TILE * SPAN };
 
-const seed = hashSeed(params.get("seed") ?? "voxolith");
-const season = (params.get("season") ?? "summer") as Season;
-const still = params.has("still");
+const seed = hashSeed(options.get("seed"));
+const season: Season = options.get("season");
+let still = options.get("still");
 
 // The loading screen's rows, in this order (phases not listed are not shown, but stay on the
 // tracker for window.loadTimeline and ?perf).
@@ -79,6 +98,7 @@ const app = await boot("world", {
     { phase: "layout", label: "Laying out the valley" },
     STEPS.ground,
   ],
+  options,
 });
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
@@ -112,7 +132,7 @@ if (app) {
 
   const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
   // ?selftest: bands showing which stage of the voxel lookup works on this GPU.
-  { const st = new URLSearchParams(location.search).get("selftest"); if (st !== null) renderer.setDebug(st === "3" ? 9 : st === "2" ? 8 : 7); }
+  if (options.given("selftest")) { const st = options.get("selftest"); renderer.setDebug(st === "3" ? 9 : st === "2" ? 8 : 7); }
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   const quality = gpu.software ? "low" : "medium";
   renderer.setQuality({
@@ -127,7 +147,7 @@ if (app) {
 
   // --- camera and loop -----------------------------------------------------------
   const far = 430 * SPAN;
-  const night0 = params.get("time") === "night";
+  const night0 = options.get("time") === "night";
   const camera = makeCamera({ target: [W / 2, 40, D / 2], distance: far, pitchDeg: 24, fovDeg: 42 });
   prepareSurface(canvas, { contextMenu: false });
   const input = createInput(canvas, { loop: { invalidate: () => loop.invalidate() } });
@@ -149,7 +169,7 @@ if (app) {
     ([adapter.vendor, adapter.architecture, adapter.description].filter(Boolean).join(" · ") || "unknown adapter") +
     `${gpu.software ? " (software)" : ""} · quality ${quality}`;
   const perf = makePerf({
-    enabled: params.has("perf"),
+    enabled: options.get("perf"),
     scale: gpu.renderScale,
     minScale: gpu.software ? 0.25 : 0.35,
     maxSampleMs: 4000,
@@ -168,8 +188,7 @@ if (app) {
   // page's: rain wets the ground and it dries slowly afterwards, snow settles
   // while it falls and melts in rain or clear weather.
   const WEATHERS: AtmosphereName[] = ["clear", "cloudy", "rain", "storm", "snow", "fog"];
-  const w0 = (params.get("weather") ?? "clear") as AtmosphereName;
-  let weatherName: AtmosphereName = w0 in ATMOSPHERES ? w0 : "clear";
+  let weatherName: AtmosphereName = options.get("weather");
   const weather = makeAtmosphereTransition(ATMOSPHERES[weatherName]);
   // Start already soaked or snowed-in when the page opens that way.
   let wetness = weatherName === "rain" || weatherName === "storm" ? 0.8 : 0;
@@ -209,8 +228,8 @@ if (app) {
   });
 
   // --- species ----------------------------------------------------------------------
-  const VARIANTS = Math.max(1, Number(params.get("variants") ?? 10));
-  const useWorkers = params.get("workers") !== "0";
+  const VARIANTS = options.get("variants");
+  const useWorkers = options.get("workers");
 
   const species: Species[] = valleySpecies(seed, season, VARIANTS);
 
@@ -403,7 +422,7 @@ if (app) {
   });
   recogniseGestures(input, { doubleTap: (t) => moveLampTo(t.x, t.y) });
   // For the end-to-end checks (tools/input-e2e.ts): where the lamp is drawn.
-  if (params.has("e2e")) {
+  if (options.get("e2e")) {
     Object.assign(window, {
       worldLamp: () => lampOnScreen(),
       worldWeather: (name: AtmosphereName, seconds = 0) => { weatherName = name; weather.set(ATMOSPHERES[name], seconds); if (weatherSel) weatherSel.value = name; },
@@ -440,10 +459,13 @@ if (app) {
   const toggleTime = () => {
     phaseTarget = Math.floor(phaseTarget * 2 + 1e-6) / 2 + 0.5;
     if (phase > phaseTarget) phase = phaseTarget - 0.5;
+    options.sync("time", isNight() ? "night" : "day");
     syncButton();
     loop.setContinuous(true);
   };
   timeBtn?.addEventListener("click", toggleTime);
+  options.on("time", (t) => { if ((t === "night") !== isNight()) toggleTime(); });
+  options.on("still", (on) => { still = on; loop.setContinuous(wantContinuous()); loop.invalidate(); });
   input.captureKeys(["KeyN"]);
   input.on((e) => {
     if (e.kind === "key" && e.phase === "down" && e.code === "KeyN" && !e.repeat) toggleTime();
@@ -455,9 +477,11 @@ if (app) {
   const setWeather = (name: AtmosphereName) => {
     weatherName = name;
     weather.set(ATMOSPHERES[name], 4);
+    options.sync("weather", name);
     if (weatherSel) weatherSel.value = name;
     loop.setContinuous(true);
   };
+  options.on("weather", setWeather);
   if (weatherSel) {
     for (const name of WEATHERS) {
       const o = document.createElement("option");
@@ -476,7 +500,7 @@ if (app) {
   });
 
   // --- build and stream ---------------------------------------------------------
-  const RADIUS = Number(params.get("radius") ?? SIZE.x * 1.5);
+  const RADIUS = options.get("radius", SIZE.x * 1.5);
   const tgt = () => orbit.target();
   world.focus(tgt()[0], tgt()[2], RADIUS);
   await compiled;
@@ -513,5 +537,5 @@ if (app) {
     `${palette.used}/255 palette slots · ${(mem.bytes / 1048576).toFixed(0)} MB of bricks · ` +
     `drag the lamp · N night/day · W weather · drag to turn, right-drag to pan, wheel to zoom`;
   loop.invalidate();
-  void reportLoadTimeline(load, { perf: params.has("perf"), overlay: perf, label: perfLabel });
+  void reportLoadTimeline(load, { perf: options.get("perf"), overlay: perf, label: perfLabel });
 }

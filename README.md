@@ -29,9 +29,14 @@ on top of the shared plumbing in `src/shared/`; each has a page in the
 | [`temporal`](src/temporal/main.ts) | shadows and AO accumulated over frames, with fps and GPU time side by side for temporal off and on; `?temporal=1`, `?renderScale=` | ~350 |
 | [`bench`](src/bench/main.ts) | the renderer benchmark: one deterministic scene with every expensive path, four fixed views, a `window.bench` hook; `?vpm=`, `?view=`, `?renderScale=`, `?quality=` | ~540 |
 
+Every URL option a page takes (`?vpm=`, `?count=`, `?weather=`, ...) is declared once in its
+`main.ts` (`defineOptions`, `src/shared/options.ts`) and can be changed from the page: the HUD's
+Options button opens a panel (a bottom sheet on a phone) that applies what it can at once and
+reloads for the rest, keeping the URL shareable.
+
 Shared (`src/shared/`): `boot.ts` (WebGPU init, the unsupported-browser card, the load tracker and
 its loading screen), `loading-screen.ts` and `loading.ts` (the loading screen and load timeline),
-`env.ts` (lighting and sky values for `FrameParams`), `voxGrid.ts` (MagicaVoxel model to Y-up dense
+`options.ts` (URL options and their panel), `env.ts` (lighting and sky values for `FrameParams`), `voxGrid.ts` (MagicaVoxel model to Y-up dense
 grid), and the worker plumbing of the heavy pages (`placement.ts`, `ground.ts`, `terrain.ts`,
 `detail.ts`, `scale.ts`).
 

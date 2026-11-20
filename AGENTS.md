@@ -104,8 +104,17 @@ Siblings needed: renderer, engine, generators.
   it; valley overlaps it with the model requests and the renderer (the palette takes the
   terrain's roles from `buildRoles`, which need no heights).
 - `src/shared/scale.ts`: the voxel scale of `valley` and `nightwood`: `isPhone` (the phone
-  profile test), `pickScale` (`?vpm=` snapped to 20, 50 or 100; default 50, 20 on a phone; the
-  HUD's scale button steps between the default and one scale finer).
+  profile test, `phoneDevice` without `?full`) and `vpmOption` (the pages' `?vpm=` declaration:
+  20, 50 or 100, anything else snapped; the page gives the default, 50, or 20 on a phone).
+- `src/shared/options.ts`: **a page's URL options, declared once** (`defineOptions({ key: { kind,
+  label, help, default, ... } })`, kinds `toggle`, `choice`, `number`, `text`). The page reads
+  them through it (`options.get(key, deviceDefault?)`, `given`), passes it to `boot(name, {
+  options })`, and the HUD gets an Options button: a popover on a desktop, a bottom sheet on a
+  narrow or touch screen. `live: true` plus `options.on(key, fn)` applies a change at once and
+  rewrites the query in place; everything else is staged and applied by "Apply and reload". A
+  HUD control or key for the same option calls `options.sync(key, value)`. `hidden: true` keeps a
+  developer switch (`?e2e`, `?hold=`) out of the panel. Never read `location.search` in a page:
+  add the option to its declaration, and to its header comment and docs page.
 - `src/world/layout.ts`: the shared valley design (terrain, sites, houses, pads, paths,
   scatter). `world` (10 vox/m) and `valley` (50 vox/m by default, 20 on a phone, 100 with
   `?vpm=100`) both read it; change the layout there, never in one page. The valley's rats only
@@ -120,7 +129,9 @@ Siblings needed: renderer, engine, generators.
 
 - An example teaches one thing. Keep a page short and self-contained, and put shared plumbing in
   `src/shared/`.
-- Every page documents its URL options in its header comment and on its docs page.
+- Every page declares its URL options with `defineOptions` (`src/shared/options.ts`), which also
+  puts them in the HUD's Options panel, and documents them in its header comment and on its docs
+  page.
 - Heavy pages give phones a lighter profile: a touch-only pointer, or storage bindings under
   512 MiB, get fewer voxels per metre and a lower preset; `?full` overrides.
 - Pages that render continuously with a still camera pass `retryAfterMs: Infinity` to

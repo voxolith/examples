@@ -7,7 +7,9 @@
 // they move. Compare the overlay's GPU memory with what stamping the same
 // forest would cost (?stamp stamps the trees instead).
 //
-// ?trees= (default 160), ?rats= (default 400).
+// ?trees= (default 160), ?rats= (default 400), ?seed=, ?perf (the perf overlay, and the load
+// timeline in the console), ?e2e (test hooks). The options are declared below, and the HUD's
+// Options panel changes them.
 //
 // ?upscale=k (an integer >= 2) is a renderer check, not a pattern to copy: every other tree is a
 // copy of its model k times coarser, drawn k times larger (`addModel(src, { scale: k })`), so the
@@ -28,16 +30,25 @@ import { boot, runLoop } from "../shared/boot";
 import { markFrames, prepared, reportLoadTimeline, step } from "../shared/loading";
 import { commitStatic, sceneWorker } from "../shared/placement";
 import { STEPS } from "../shared/loading-screen";
+import { defineOptions, OPTION, seedOption } from "../shared/options";
 
-const params = new URLSearchParams(location.search);
-const TREE_COUNT = Math.max(0, Math.min(2000, Number(params.get("trees") ?? 160)));
-const RAT_COUNT = Math.max(0, Math.min(3000, Number(params.get("rats") ?? 400)));
-const STAMP = params.has("stamp");
-const UPSCALE = STAMP ? 0 : Math.max(0, Math.floor(Number(params.get("upscale") ?? 0)));
+const options = defineOptions({
+  trees: { kind: "number", label: "Trees", help: "How many trees are placed, from six models.", min: 0, max: 2000, step: 40, integer: true, default: 160 },
+  rats: { kind: "number", label: "Rats", help: "The size of the crowd.", min: 0, max: 3000, step: 100, integer: true, default: 400 },
+  stamp: { kind: "toggle", label: "Stamp the trees", help: "Write the trees into the world's bricks instead of drawing them as instances, to compare the memory.", default: false },
+  upscale: { kind: "number", label: "Upscaled copies", help: "A renderer check: every other tree is a copy k times coarser, drawn k times larger (2 or more; 0 for none).", min: 0, max: 16, step: 1, integer: true, default: 0 },
+  seed: seedOption("instances"),
+  perf: OPTION.perf,
+  e2e: OPTION.e2e,
+});
+const TREE_COUNT = options.get("trees");
+const RAT_COUNT = options.get("rats");
+const STAMP = options.get("stamp");
+const UPSCALE = STAMP ? 0 : options.get("upscale");
 if (UPSCALE === 1) console.warn("[instances] ?upscale needs an integer >= 2; ignored");
 const UPSCALED = UPSCALE >= 2;
 const SIZE = { x: 896, y: 176, z: 896 };
-const seed = hashSeed(params.get("seed") ?? "instances");
+const seed = hashSeed(options.get("seed"));
 
 // The loading screen's rows, in this order (phases not listed are not shown, but stay on the
 // tracker for window.loadTimeline and ?perf).
@@ -55,6 +66,7 @@ const app = await boot("instances", {
     // ?upscale uploads and places on the main thread, so its upload row counts models.
     ...(STAMP ? [{ phase: "stamp", label: "Stamping the trees" }] : [UPSCALED ? STEPS.upload : STEPS.encodedUpload, STEPS.placement]),
   ],
+  options,
 });
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
@@ -171,7 +183,7 @@ if (app) {
     target: [SIZE.x / 2, 20, SIZE.z / 2], pan: "secondary", panBounds: { minX: 0, maxX: SIZE.x, minZ: 0, maxZ: SIZE.z },
   });
   const frame = () => camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch());
-  const perf = makePerf({ enabled: params.has("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.4, retryAfterMs: Infinity });
+  const perf = makePerf({ enabled: options.get("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.4, retryAfterMs: Infinity });
   const sky = atmosphereFrame(timeOfDay(0.42), ATMOSPHERES.clear);
   let last = performance.now();
   const acc = { frames: 0, ms: 0, t: performance.now() };
@@ -194,14 +206,14 @@ if (app) {
   observeResize(canvas, loop);
   screen.ready();
   markFrames(load, renderer);
-  void reportLoadTimeline(load, { perf: params.has("perf"), overlay: perf });
+  void reportLoadTimeline(load, { perf: options.get("perf"), overlay: perf });
   setInterval(() => {
     const now = performance.now(), secs = (now - acc.t) / 1000, st = renderer.instanceStats();
     info.textContent = `${statics.length} trees ${STAMP ? "stamped" : "instanced"} · ${members.length} rats · ${st.instances} instances of ${st.models} models · ` +
       `${(acc.frames / secs).toFixed(0)} fps · ${(acc.ms / Math.max(1, acc.frames)).toFixed(1)} ms CPU · GPU voxels ${(st.bytes / 1048576).toFixed(0)} MB`;
     Object.assign(acc, { frames: 0, ms: 0, t: now });
   }, 1000);
-  if (params.has("e2e")) Object.assign(window, { instancesStats: () => ({ ...renderer.instanceStats(), rats: members.length, trees: statics.length, first: { x: members[0]?.x, z: members[0]?.z, yaw: members[0]?.yaw } }) });
+  if (options.get("e2e")) Object.assign(window, { instancesStats: () => ({ ...renderer.instanceStats(), rats: members.length, trees: statics.length, first: { x: members[0]?.x, z: members[0]?.z, yaw: members[0]?.yaw } }) });
 }
 
 /**

@@ -9,7 +9,8 @@
 // joints only.
 //
 // ?vpm=100 uses rats sized for a 100 voxels-per-metre world (smaller, finer); ?yaw= turns them;
-// ?pairs= shows only the first few clips; ?distance= sets the camera distance.
+// ?pairs= shows only the first few clips; ?distance= sets the camera distance. The options are
+// declared below, and the HUD's Options panel changes them.
 //
 // Posing on the GPU from a shared rest model follows Gruen, Benthin, Kern and McAllister, "Ray
 // Tracing Massive Amounts of Animated Geometry" (HPG 2026, doi:10.1145/3820014), and Kao,
@@ -26,11 +27,17 @@ import { atScale, generateCreature, PRESETS } from "@voxolith/gen-creature";
 import { boot, runLoop } from "../shared/boot";
 import { markFrames, prepared, reportLoadTimeline, step } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
+import { defineOptions } from "../shared/options";
 
-const params = new URLSearchParams(location.search);
-const vpm = Number(params.get("vpm") ?? 10);
-const yaw = Number(params.get("yaw") ?? 0.35);
-const distance = Number(params.get("distance") ?? 230);
+const options = defineOptions({
+  vpm: { kind: "number", label: "Voxels per metre", help: "The world scale the rats are sized for: at 100 they are smaller and finer.", min: 10, max: 250, step: 10, default: 10 },
+  pairs: { kind: "number", label: "Pairs", help: "Show only the first few clips, one baked and one GPU-posed rat each.", min: 1, max: 99, step: 1, integer: true, default: 99 },
+  yaw: { kind: "number", label: "Heading", help: "The rats' yaw, in radians.", min: -6.3, max: 6.3, step: 0.35, default: 0.35 },
+  distance: { kind: "number", label: "Camera distance", help: "How far the camera starts, in voxels.", min: 20, max: 600, step: 10, default: 230 },
+});
+const vpm = options.get("vpm");
+const yaw = options.get("yaw");
+const distance = options.get("distance");
 const PAIR = 64, GAP = 30;
 const SIZE = { x: 480, y: 48, z: 150 };
 
@@ -44,11 +51,12 @@ const app = await boot("rigged", {
     STEPS.shaders,
     STEPS.pipelines,
   ],
+  options,
 });
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
   const rat = await step(load, "creatures", () => generateCreature(vpm > 10 ? atScale(PRESETS.rat, vpm) : PRESETS.rat, seededRandom(11), "rat").entity);
-  const clips = rat.clips!.map((c) => c.id).slice(0, Math.max(1, Number(params.get("pairs") ?? 99)));
+  const clips = rat.clips!.map((c) => c.id).slice(0, options.get("pairs"));
 
   // Ground in two tones: under the baked rat of each pair, and under the one posed on the GPU.
   const palette = new PaletteAllocator(1);

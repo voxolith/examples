@@ -38,11 +38,16 @@ export const COARSE_VPM = 10;
  * add work. The URL overrides both: `?coarse=0` turns the stage off, `?coarse=1` on at any scale
  * that is a multiple of 10 (at 20 too, factor 2), to compare or to test it on a phone.
  */
-export function coarseFactor(vpm: number, params: URLSearchParams, enabled: boolean): number {
-  const asked = params.get("coarse");
+export function coarseFactor(vpm: number, asked: "auto" | "0" | "1", enabled: boolean): number {
   const on = asked === "1" ? true : asked === "0" ? false : enabled && vpm >= 50;
   return on && vpm > COARSE_VPM && vpm % COARSE_VPM === 0 ? vpm / COARSE_VPM : 1;
 }
+
+/** The `?coarse=` option of the pages with a coarse stage, to spread into their declarations. */
+export const coarseOption = {
+  kind: "choice", label: "Coarse first", help: "Show the scene with 10 vox/m models drawn enlarged, then swap the fine ones in. Auto: at 50 and 100 on a desktop.",
+  values: ["auto", "0", "1"], default: "auto", format: (v: string) => ({ auto: "Auto", "0": "Off", "1": "On" })[v] ?? v,
+} as const;
 
 /** The fine stage's phases: the engine's own, filed under a name of their own. */
 export const FINE_PHASES = {

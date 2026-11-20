@@ -10,7 +10,9 @@
 // ?count= sets how many (default 300, up to 2000). The overlay shows what it
 // costs. ?instances draws the baked poses as instances instead of stamping
 // them; ?rigged poses the rats on the GPU from one rest model per variant (no
-// baking at all; see the engine's makeCrowd `rigged` option).
+// baking at all; see the engine's makeCrowd `rigged` option). Also ?seed=, ?perf
+// (the perf overlay, and the load timeline in the console) and ?e2e (test hooks).
+// The options are declared below, and the HUD's Options panel changes them.
 
 import { createRenderer, makeCamera, makePerf, makeRay, observeResize, resizeToDisplay, type Renderer } from "@voxolith/renderer";
 import { hashSeed, seededRandom } from "@voxolith/renderer/core";
@@ -23,11 +25,19 @@ import { generateCreature, PRESETS } from "@voxolith/gen-creature";
 import { boot, runLoop } from "../shared/boot";
 import { markFrames, prepared, reportLoadTimeline, step } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
+import { defineOptions, OPTION, seedOption } from "../shared/options";
 
-const params = new URLSearchParams(location.search);
-const COUNT = Math.max(1, Math.min(2000, Number(params.get("count") ?? 300)));
+const options = defineOptions({
+  count: { kind: "number", label: "Rats", help: "The size of the crowd.", min: 1, max: 2000, step: 50, integer: true, default: 300 },
+  instances: { kind: "toggle", label: "Draw as instances", help: "Draw the baked poses as instances instead of stamping them into the world.", default: false },
+  rigged: { kind: "toggle", label: "Pose on the GPU", help: "One rest model per variant, posed by the renderer: no baking at all. Wins over instances.", default: false },
+  seed: seedOption("swarm"),
+  perf: OPTION.perf,
+  e2e: OPTION.e2e,
+});
+const COUNT = options.get("count");
 const SIZE = { x: 640, y: 72, z: 640 };
-const seed = hashSeed(params.get("seed") ?? "swarm");
+const seed = hashSeed(options.get("seed"));
 
 // The loading screen's rows, in this order (phases not listed are not shown, but stay on the
 // tracker for window.loadTimeline and ?perf).
@@ -41,6 +51,7 @@ const app = await boot("swarm", {
     STEPS.pipelines,
     STEPS.ground,
   ],
+  options,
 });
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
@@ -54,7 +65,7 @@ if (app) {
   const variants: Entity[] = await step(load, "creatures", () => KINDS.map((k, i) => generateCreature(PRESETS[k], seededRandom(seed + i * 97), k).entity));
   const bases = variants.map((e, i) => palette.allocate(e.model.roles, KINDS[i]).base);
 
-  const mode = params.has("rigged") ? "rigged" : params.has("instances") ? "instances" : "stamped";
+  const mode = options.get("rigged") ? "rigged" : options.get("instances") ? "instances" : "stamped";
   const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   renderer.setQuality(gpu.software ? "low" : "medium");
@@ -138,7 +149,7 @@ if (app) {
   };
 
   // --- loop and overlay ------------------------------------------------------------
-  const perf = makePerf({ enabled: params.has("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.4, retryAfterMs: Infinity });
+  const perf = makePerf({ enabled: options.get("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.4, retryAfterMs: Infinity });
   const sky = atmosphereFrame(timeOfDay(0.45), ATMOSPHERES.clear);
   let last = performance.now();
   const acc = { frames: 0, ms: 0, bakes: 0, bricks: 0, hits: 0, misses: 0, fpsT: performance.now() };
@@ -163,7 +174,7 @@ if (app) {
   observeResize(canvas, loop);
   screen.ready();
   markFrames(load, renderer);
-  void reportLoadTimeline(load, { perf: params.has("perf"), overlay: perf });
+  void reportLoadTimeline(load, { perf: options.get("perf"), overlay: perf });
 
   const overlay = () => {
     const now = performance.now(), secs = (now - acc.fpsT) / 1000;
@@ -175,5 +186,5 @@ if (app) {
     Object.assign(acc, { frames: 0, ms: 0, bakes: 0, bricks: 0, fpsT: now });
   };
   setInterval(overlay, 1000);
-  if (params.has("e2e")) Object.assign(window, { swarmStats: () => ({ rats: rats.length, running: rats.filter((r) => r.panic > 0).length, last: stats }), swarmScare: (x: number, y: number) => { scareAt(x, y, 90); const sc = scare as { x: number; z: number; r: number } | null; return sc ? rats.filter((r) => Math.hypot(r.x - sc.x, r.z - sc.z) < sc.r).length : -1; } });
+  if (options.get("e2e")) Object.assign(window, { swarmStats: () => ({ rats: rats.length, running: rats.filter((r) => r.panic > 0).length, last: stats }), swarmScare: (x: number, y: number) => { scareAt(x, y, 90); const sc = scare as { x: number; z: number; r: number } | null; return sc ? rats.filter((r) => Math.hypot(r.x - sc.x, r.z - sc.z) < sc.r).length : -1; } });
 }

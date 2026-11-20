@@ -26,10 +26,10 @@
 //     thick at real size, so it would have to be built larger than life
 //     (0.86 m long at 50, 2.15 m at 20); the page leaves them out instead.
 //
-// URL options:
+// URL options (declared below; the HUD's Options panel changes them: time
+// and weather at once, the rest by reloading):
 //   ?vpm=20|50|100 the voxels per metre (default 50, 20 on a phone; anything
-//               else snaps to the nearest; the HUD's scale button steps
-//               between the default and one scale finer), ?scale= the valley
+//               else snaps to the nearest), ?scale= the valley
 //               size as on the world page (default 4), ?variants= the models
 //               per species (default 3; the world page uses 10, which matches
 //               it exactly but needs over a gigabyte of GPU memory at 100),
@@ -90,13 +90,29 @@ import { buildAround, groundFill } from "../shared/ground";
 import { terrainOffThread } from "../shared/terrain";
 import { commitStatic, sceneWorker } from "../shared/placement";
 import { STEPS, type LoadingStep } from "../shared/loading-screen";
-import { COARSE_STEPS, COARSE_VPM, coarseFactor, FINE_STEPS, stagedLoad, swapToFine } from "../shared/detail";
-import { isPhone, pickScale, SCALES, voxelSize } from "../shared/scale";
+import { COARSE_STEPS, COARSE_VPM, coarseFactor, coarseOption, FINE_STEPS, stagedLoad, swapToFine } from "../shared/detail";
+import { isPhone, phoneDevice, SCALES, voxelSize, vpmOption } from "../shared/scale";
+import { defineOptions, OPTION, seedOption } from "../shared/options";
+import { VALLEY_OPTIONS } from "../world/options";
 
-const params = new URLSearchParams(location.search);
-const seed = hashSeed(params.get("seed") ?? "voxolith");
-const season = (params.get("season") ?? "summer") as Season;
-const num = (key: string, fallback: number) => (params.has(key) ? Number(params.get(key)) : fallback);
+// The defaults here are a desktop's; a phone's come with each `options.get` below.
+const options = defineOptions({
+  vpm: vpmOption,
+  scale: { kind: "number", label: "Valley size", help: "Tiles of 32 m along each side, as on the world page.", min: 1, max: 8, step: 1, integer: true, default: 4 },
+  variants: { kind: "number", label: "Models per species", help: "More variety costs GPU memory: 10 needs over a gigabyte at 100 vox/m.", min: 1, max: 10, step: 1, default: 3 },
+  rats: { kind: "number", label: "Rats", help: "The crowd in the village. By default only where rats come out real size (100 vox/m); a number forces them, larger than life below that.", min: 0, max: 400, step: 10, default: 0 },
+  rigged: { kind: "toggle", label: "Pose rats on the GPU", help: "One rest model per variant, posed by the renderer, instead of baked poses.", default: false },
+  ...VALLEY_OPTIONS,
+  radius: { kind: "number", label: "Streamed radius", help: "Metres of ground kept around the view.", min: 8, max: 256, step: 4, default: 24 },
+  near: { kind: "number", label: "Ground before the first picture", help: "Metres of ground around the view that the loading screen waits for.", min: 0, max: 256, step: 2, default: 18 },
+  coarse: coarseOption,
+  seed: seedOption("voxolith"),
+  perf: OPTION.perf,
+  full: OPTION.full,
+  e2e: OPTION.e2e,
+});
+const seed = hashSeed(options.get("seed"));
+const season: Season = options.get("season");
 
 /**
  * Coarse first, one swap (../shared/detail.ts), per device. On: at 50 and 100 vox/m the first
@@ -130,7 +146,7 @@ const loadingSteps = (rats: boolean, coarse: boolean): LoadingStep[] => [
   ...(coarse ? FINE_STEPS : []),
 ];
 
-const app = await boot("valley", { blurb: "The valley, refined and streamed", steps: loadingSteps(false, false) });
+const app = await boot("valley", { blurb: "The valley, refined and streamed", steps: loadingSteps(false, false), options });
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
   // One tracker for the whole load (boot's): the generator workers, the renderer, the instance
@@ -142,29 +158,30 @@ if (app) {
   // species and the Low preset. Told apart by a touch-only pointer or the
   // small storage bindings mobile GPUs offer. ?full asks for the desktop
   // settings; every setting below can still be given on its own.
-  const phone = isPhone(gpu, params);
+  if (!phoneDevice(gpu)) options.hide("full");
+  const phone = isPhone(gpu, options.get("full"));
   // 50 voxels per metre (2 cm) by default, 20 (5 cm) on a phone; 100 (1 cm)
-  // is still too heavy for a desktop GPU. The HUD's scale button reloads one
-  // scale finer, or back (?vpm=), since every model is generated for its scale.
+  // is still too heavy for a desktop GPU. Changing it (?vpm=, in the Options
+  // panel) reloads, since every model is generated for its scale.
   /** Voxels per metre here (20, 50 or 100), and the factor over the world page's 10. */
-  const VPM = pickScale(params, phone);
+  const VPM = options.get("vpm", phone ? 20 : 50);
   const title = document.querySelector("#hud .brand small");
   if (title) title.textContent = `valley · ${voxelSize(VPM)} voxels`;
   const K = VPM / 10;
   /** Lengths below are written for 1 cm voxels; this scales them to VPM. */
   const cm = VPM / 100;
-  const SPAN = Math.max(1, Math.min(8, Math.round(num("scale", phone ? 2 : 4))));
+  const SPAN = options.get("scale", phone ? 2 : 4);
   const COARSE = { x: TILE * SPAN, y: 192, z: TILE * SPAN };
   const SIZE = { x: COARSE.x * K, y: COARSE.y * K, z: COARSE.z * K };
-  const VARIANTS = Math.max(1, Math.min(10, num("variants", phone ? 1 : 3)));
+  const VARIANTS = options.get("variants", phone ? 1 : 3);
   // Rats only where every variant comes out at its real size (100 vox/m of
   // the three), unless ?rats= asks for them anyway.
   const RAT_KINDS = ["rat", "grey rat", "lab rat", "black rat"];
   const ratsReal = RAT_KINDS.every((k) => realSizeAt(RATS[k], VPM));
-  const RAT_COUNT = Math.max(0, Math.min(400, num("rats", ratsReal ? (phone ? 20 : 60) : 0)));
+  const RAT_COUNT = options.get("rats", ratsReal ? (phone ? 20 : 60) : 0);
   /** The HUD's note when rats were left out: the coarsest scale at which they are real size. */
   const ratScale = SCALES.find((s) => RAT_KINDS.every((k) => s >= minVoxelsPerMetre(RATS[k])));
-  const ratsNote = !RAT_COUNT && !params.has("rats") && ratScale ? `rats at ${voxelSize(ratScale)}` : `${RAT_COUNT} rats`;
+  const ratsNote = !RAT_COUNT && !options.given("rats") && ratScale ? `rats at ${voxelSize(ratScale)}` : `${RAT_COUNT} rats`;
   /**
    * Metres of ground around the view's target that the first picture waits for. The first view
    * looks down on the village from 26 m and reaches nearly to the streamed edge, so it needs most
@@ -173,14 +190,14 @@ if (app) {
    */
   const NEAR_M = 18;
   /** Streamed radius, in voxels (given in metres). */
-  const RADIUS = Math.max(8, num("radius", phone ? 16 : 24)) * VPM;
+  const RADIUS = options.get("radius", phone ? 16 : 24) * VPM;
   /**
    * Ground built around the view's target before the first picture (?near=, metres); the rest of
    * RADIUS streams in after it, nearest first.
    */
-  const NEAR = Math.max(0, Math.min(RADIUS / VPM, num("near", NEAR_M))) * VPM;
+  const NEAR = Math.max(0, Math.min(RADIUS / VPM, options.get("near", NEAR_M))) * VPM;
   /** The coarse stage's factor: models built at 10 vox/m drawn KC times enlarged (1: none: at 20, on a phone, or ?coarse=0). */
-  const KC = coarseFactor(VPM, params, phone ? COARSE_FIRST.phone : COARSE_FIRST.desktop);
+  const KC = coarseFactor(VPM, options.get("coarse"), phone ? COARSE_FIRST.phone : COARSE_FIRST.desktop);
   if (RAT_COUNT || KC > 1) screen.setSteps(loadingSteps(RAT_COUNT > 0, KC > 1));
 
   // --- the models, on workers ------------------------------------------------------------
@@ -211,7 +228,7 @@ if (app) {
   const coarse = generate(COARSE_VPM, KC > 1 ? undefined : isHouse);
   if (KC > 1) staged.fine("models");
   const fine = generate(VPM);
-  if (params.has("perf")) void fine.then(() => console.log(`[valley] ${species.reduce((n, sp) => n + sp.count, 0)} models at ${VPM} vox/m in ${((performance.now() - t0) / 1000).toFixed(1)} s`));
+  if (options.get("perf")) void fine.then(() => console.log(`[valley] ${species.reduce((n, sp) => n + sp.count, 0)} models at ${VPM} vox/m in ${((performance.now() - t0) / 1000).toFixed(1)} s`));
   // Not awaited: destroying lets the workers finish their cache writes.
   void fine.finally(() => void workers.destroy()).catch(() => {});
 
@@ -262,7 +279,7 @@ if (app) {
   // first frame.
   // The coarse stage draws scaled models, a variant of its own: the unscaled one is compiled
   // alongside and awaited before the swap, so neither compiles on a frame.
-  const parts = RAT_COUNT > 0 && params.has("rigged");
+  const parts = RAT_COUNT > 0 && options.get("rigged");
   const compiled = prepared(renderer.prepare({ instances: true, parts, scaled: KC > 1 }));
   const compiledFine = KC > 1 ? prepared(renderer.prepare({ instances: true, parts })) : compiled;
 
@@ -308,7 +325,7 @@ if (app) {
   // Where the camera starts (the village, or the glade at night): focused now, so the workers
   // fill the ground there while this thread sets up the scenery. Chunks are only copied in by
   // `step`, from the loading wait below and then the frame loop.
-  const night0 = params.get("time") === "night";
+  const night0 = options.get("time") === "night";
   const [vx, vz] = [sites.VC[0] * K, sites.VC[1] * K];
   const start: [number, number] = night0 ? [sites.GC[0] * K, sites.GC[1] * K] : [vx, vz];
   world.focus(start[0], start[1], RADIUS, RADIUS * 1.3);
@@ -374,7 +391,7 @@ if (app) {
   // --- rats ---------------------------------------------------------------------------------
   interface Rat extends CrowdMember { speed: number; turn: number; timer: number; }
   // ?rigged poses the rats on the GPU from one rest model per variant instead of baking poses.
-  const crowd = RAT_COUNT === 0 ? null : makeCrowd({ instances: layer, rigged: params.has("rigged"), near: 3000 * cm, farFps: 6, freeze: 12000 * cm, budgetMs: 4 });
+  const crowd = RAT_COUNT === 0 ? null : makeCrowd({ instances: layer, rigged: options.get("rigged"), near: 3000 * cm, farFps: 6, freeze: 12000 * cm, budgetMs: 4 });
   const rng = seededRandom(seed ^ 0x51ed);
   const members: Rat[] = [];
   for (let i = 0; i < RAT_COUNT; i++) {
@@ -426,15 +443,14 @@ if (app) {
     distance: (night0 ? 1800 : 2600) * cm,
   });
   const frame = () => camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch());
-  const perf = makePerf({ enabled: params.has("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.35, maxSampleMs: 4000, retryAfterMs: Infinity });
+  const perf = makePerf({ enabled: options.get("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.35, maxSampleMs: 4000, retryAfterMs: Infinity });
 
   // --- time of day, weather, lamp (as on the world page) --------------------------------
   const TRANSITION_S = 2.5;
   let phase = night0 ? 1.0 : 0.5;
   let phaseTarget = phase;
   const WEATHERS: AtmosphereName[] = ["clear", "cloudy", "rain", "storm", "snow", "fog"];
-  const w0 = (params.get("weather") ?? "clear") as AtmosphereName;
-  let weatherName: AtmosphereName = w0 in ATMOSPHERES ? w0 : "clear";
+  let weatherName: AtmosphereName = options.get("weather");
   const weather = makeAtmosphereTransition(ATMOSPHERES[weatherName]);
   let wetness = weatherName === "rain" || weatherName === "storm" ? 0.8 : 0;
   let snowCover = weatherName === "snow" ? 0.75 : 0;
@@ -537,16 +553,20 @@ if (app) {
   const toggleTime = () => {
     phaseTarget = Math.floor(phaseTarget * 2 + 1e-6) / 2 + 0.5;
     if (phase > phaseTarget) phase = phaseTarget - 0.5;
+    options.sync("time", isNight() ? "night" : "day");
     syncButton();
   };
   timeBtn?.addEventListener("click", toggleTime);
+  options.on("time", (t) => { if ((t === "night") !== isNight()) toggleTime(); });
   input.captureKeys(["KeyN", "KeyW"]);
   const weatherSel = document.getElementById("weather") as HTMLSelectElement | null;
   const setWeather = (name: AtmosphereName, seconds = 4) => {
     weatherName = name;
     weather.set(ATMOSPHERES[name], seconds);
+    options.sync("weather", name);
     if (weatherSel) weatherSel.value = name;
   };
+  options.on("weather", (name) => setWeather(name));
   input.on((e) => {
     if (e.kind !== "key" || e.phase !== "down" || e.repeat) return;
     if (e.code === "KeyN") toggleTime();
@@ -601,7 +621,7 @@ if (app) {
   requestAnimationFrame(countFrames);
   setInterval(report, 1000);
   report();
-  void reportLoadTimeline(load, { perf: params.has("perf"), overlay: perf });
+  void reportLoadTimeline(load, { perf: options.get("perf"), overlay: perf });
 
   // --- the fine set, swapped in -----------------------------------------------------------
   // The coarse set draws until the fine bake applies; then its models are released. The rats'
@@ -618,7 +638,7 @@ if (app) {
       .finally(() => void worker.destroy());
   } else void placed.finally(() => void worker.destroy());
 
-  if (params.has("e2e")) {
+  if (options.get("e2e")) {
     Object.assign(window, {
       valleyStats: () => ({ ...renderer.instanceStats(), houses: valley.houses.length, trees, rocks, plants, rats: members.length, resident: world.resident, pending: world.pending, built, detail, first: members[0] ? { x: members[0].x, z: members[0].z } : null, ratSum: members.reduce((n, r) => n + r.x + r.z, 0) }),
       valleyPlaces: { village: [vx, vz], glade: [sites.GC[0] * K, sites.GC[1] * K], get rat() { return members[0] ? [members[0].x, members[0].z] : [vx, vz]; } },

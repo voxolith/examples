@@ -8,6 +8,7 @@ import { trackRenderer } from "@voxolith/engine";
 import { boot, runLoop } from "../shared/boot";
 import { markFrames, prepared, reportLoadTimeline } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
+import { defineOptions, OPTION } from "../shared/options";
 import { classicSky } from "@voxolith/engine/atmosphere";
 import { DAYLIGHT } from "../shared/env";
 
@@ -44,8 +45,10 @@ if (app) {
   palette.set([0.25, 0.5, 0.85, 1], WATER * 4);
 
   const renderer = await createRenderer(gpu, { size, data, palette }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
-  // ?selftest: bands showing which stage of the voxel lookup works on this GPU.
-  { const st = new URLSearchParams(location.search).get("selftest"); if (st !== null) renderer.setDebug(st === "3" ? 9 : st === "2" ? 8 : 7); }
+  // ?selftest: bands showing which stage of the voxel lookup works on this GPU. A developer's
+  // switch, declared hidden, so this page has no Options button.
+  const options = defineOptions({ selftest: OPTION.selftest });
+  if (options.given("selftest")) { const st = options.get("selftest"); renderer.setDebug(st === "3" ? 9 : st === "2" ? 8 : 7); }
   renderer.updateCoarse(new OccupancyGrid(size, data).data);
   renderer.setFloor({ enabled: true, y: 0, colorA: [0.3, 0.32, 0.36], colorB: [0.24, 0.26, 0.3] });
 

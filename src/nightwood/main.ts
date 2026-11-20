@@ -13,15 +13,16 @@
 // measured against this page.
 //
 // Models are generated at 50 voxels per metre (2 cm) on a desktop and 20 (5 cm) on a phone (a
-// touch-only pointer, or storage bindings under 512 MiB); the HUD's button reloads one scale finer
-// (100 or 50), or back. They are made on workers (the world page's generator worker, with its model
+// touch-only pointer, or storage bindings under 512 MiB); the Options panel reloads at another
+// scale. They are made on workers (the world page's generator worker, with its model
 // cache in production builds) and drawn as instances; the ground is refined per brick column
 // around the clearing, its chunks filled on workers (../shared/ground.ts). At 50 and 100 on a
 // desktop the page shows the wood first with every model built at 10 vox/m and drawn 5 or 10
 // times enlarged, then generates the fine models in the background and swaps them in at once
 // (../shared/detail.ts, switched per device by COARSE_FIRST below: phones load in one stage); the
 // first picture waits only for the ground within 8 m. Phones also get fewer fireflies and a lighter preset. Every length is in metres, so the
-// scene is the same at every scale. URL options:
+// scene is the same at every scale. URL options (declared below; the HUD's Options panel changes
+// them: the weather and its mist at once, the rest by reloading):
 //   ?vpm=20|50|100 (default 50, 20 on a phone; anything else snaps to the nearest), ?coarse=0|1 (the
 //   coarse stage off, or on at any scale and on a phone; default on at 50 and 100 on a desktop), ?near= (metres of ground the first
 //   picture waits for, default 8), ?fireflies=
@@ -50,12 +51,32 @@ import { buildAround, groundFill } from "../shared/ground";
 import { terrainOffThread } from "../shared/terrain";
 import { commitStatic, sceneWorker } from "../shared/placement";
 import { STEPS } from "../shared/loading-screen";
-import { COARSE_STEPS, COARSE_VPM, coarseFactor, FINE_STEPS, stagedLoad, swapToFine } from "../shared/detail";
-import { isPhone, pickScale, voxelSize } from "../shared/scale";
+import { COARSE_STEPS, COARSE_VPM, coarseFactor, coarseOption, FINE_STEPS, stagedLoad, swapToFine } from "../shared/detail";
+import { isPhone, phoneDevice, voxelSize, vpmOption } from "../shared/scale";
+import { defineOptions, OPTION, seedOption } from "../shared/options";
 
-const params = new URLSearchParams(location.search);
-const seed = hashSeed(params.get("seed") ?? "nightwood");
-const num = (key: string, fallback: number) => (params.has(key) ? Number(params.get(key)) : fallback);
+// The defaults here are a desktop's; a phone's come with each `options.get` below.
+const options = defineOptions({
+  vpm: vpmOption,
+  weather: { kind: "choice", label: "Weather", help: "The engine's atmosphere preset; clear for no mist.", values: Object.keys(ATMOSPHERES) as (keyof typeof ATMOSPHERES)[], default: "fog", live: true, format: (v: string) => v[0].toUpperCase() + v.slice(1) },
+  mist: { kind: "number", label: "Mist", help: "How thick the weather's fog is, times the engine's.", min: 0, max: 4, step: 0.1, default: 0.8, live: true },
+  view: { kind: "number", label: "View distance", help: "Metres to the fog wall, where every ray stops.", min: 8, max: 40, step: 2, default: 24 },
+  fireflies: { kind: "number", label: "Fireflies", help: "Each is an unshadowed point light with a halo (12 on a phone).", min: 0, max: 28, step: 2, default: 24 },
+  temporal: { kind: "toggle", label: "Temporal accumulation", help: "Shadows and AO accumulate over frames; off traces them in full every frame. Not on the Low preset.", default: true },
+  reflections: { kind: "toggle", label: "Reflections", help: "Metal and glass trace their secondary rays.", default: false },
+  upscale: { kind: "number", label: "Traced fraction", help: "Trace at this fraction of the output and resolve to it over frames (experimental; a phone adapts it unless set).", min: 0.25, max: 1, step: 0.25, default: 1 },
+  renderScale: { kind: "number", label: "Fixed render scale", help: "A fixed render scale instead of the adaptive one; 0 for adaptive.", min: 0, max: 2, step: 0.1, default: 0 },
+  trees: { kind: "number", label: "Tree density", help: "0 to 1, for measuring what the scene costs.", min: 0, max: 1, step: 0.1, default: 1 },
+  shrubs: { kind: "number", label: "Shrub density", help: "0 to 1.", min: 0, max: 1, step: 0.1, default: 1 },
+  plants: { kind: "number", label: "Ground plant density", help: "0 to 1.", min: 0, max: 1, step: 0.1, default: 1 },
+  near: { kind: "number", label: "Ground before the first picture", help: "Metres of ground around the camera that the loading screen waits for.", min: 0, max: 40, step: 2, default: 8 },
+  coarse: coarseOption,
+  seed: seedOption("nightwood"),
+  perf: OPTION.perf,
+  full: OPTION.full,
+  e2e: OPTION.e2e,
+});
+const seed = hashSeed(options.get("seed"));
 
 /**
  * Coarse first, one swap (../shared/detail.ts), per device. On: at 50 and 100 vox/m the first
@@ -81,31 +102,30 @@ const loadingSteps = (coarse: boolean) => [
   { ...STEPS.ground, background: true },
   ...(coarse ? FINE_STEPS : []),
 ];
-const app = await boot("nightwood", { blurb: "A forest clearing at night", steps: loadingSteps(false) });
+const app = await boot("nightwood", { blurb: "A forest clearing at night", steps: loadingSteps(false), options });
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
   // One tracker for the whole load (boot's: workers, renderer, instance layer, ground); the
   // loading screen shows it until the clearing is up.
   // A phone: touch-only pointer or the small storage bindings mobile GPUs offer (as the valley).
-  const phone = isPhone(gpu, params);
-  // 50 voxels per metre (2 cm) by default, 20 (5 cm) on a phone; the HUD's scale button reloads one
-  // scale finer, or back (?vpm=), since every model is generated for its scale.
-  const VPM = pickScale(params, phone);
+  if (!phoneDevice(gpu)) options.hide("full");
+  const phone = isPhone(gpu, options.get("full"));
+  // 50 voxels per metre (2 cm) by default, 20 (5 cm) on a phone; changing it (?vpm=, in the
+  // Options panel) reloads, since every model is generated for its scale.
+  const VPM = options.get("vpm", phone ? 20 : 50);
   const title = document.querySelector("#hud .brand small");
   if (title) title.textContent = `nightwood · ${voxelSize(VPM)} voxels`;
   /** Metres to voxels at this resolution. */
   const m = (metres: number) => metres * VPM;
   const K = VPM / 10;
   /** The coarse stage's factor: its models are built at 10 vox/m and drawn KC times enlarged (1: no coarse stage: at 20, on a phone, or ?coarse=0). */
-  const KC = coarseFactor(VPM, params, phone ? COARSE_FIRST.phone : COARSE_FIRST.desktop);
+  const KC = coarseFactor(VPM, options.get("coarse"), phone ? COARSE_FIRST.phone : COARSE_FIRST.desktop);
   if (KC > 1) screen.setSteps(loadingSteps(true));
   // Density knobs, 0-1 (for measuring what the scene costs): ?trees=, ?shrubs=, ?plants=.
-  const DENSITY = { trees: num("trees", 1), shrubs: num("shrubs", 1), plants: num("plants", 1) };
-  const FIXED_SCALE = num("renderScale", 0);
-  /** How thick the weather's fog is, times the engine's (?mist=). */
-  const MIST = Math.max(0, num("mist", 0.8));
+  const DENSITY = { trees: options.get("trees"), shrubs: options.get("shrubs"), plants: options.get("plants") };
+  const FIXED_SCALE = options.get("renderScale");
   /** View distance, metres: the fog wall, and how far any ray goes. */
-  const VIEW = Math.max(8, Math.min(40, num("view", 24)));
+  const VIEW = options.get("view");
   /**
    * Metres of ground around the camera built before the first picture (?near=). The camera stands
    * still and the fog and the undergrowth hide the rest, so this is what the first view needs
@@ -113,7 +133,7 @@ if (app) {
    * vox/m, 8 m none); the rest of the reach streams in after it.
    */
   const NEAR_M = 8;
-  const FIREFLIES = Math.max(0, Math.min(28, num("fireflies", phone ? 12 : 24)));
+  const FIREFLIES = options.get("fireflies", phone ? 12 : 24);
 
   // --- the design, at 10 voxels per metre ------------------------------------------------------
   // A 60 m square of gently rolling forest floor, no water, 24 m of air for the tallest spruce; the
@@ -188,15 +208,15 @@ if (app) {
   // The view distance bounds every primary ray (about 1.7 steps per voxel of it at worst).
   // Shadows and AO accumulate over frames (?temporal=0 for one ray per pixel per frame): the shadow
   // rays are half of this page's frame without it. It needs the compute path, and is skipped otherwise.
-  const temporal = quality !== "low" && params.get("temporal") !== "0";
+  const temporal = quality !== "low" && options.get("temporal");
   // No reflection or refraction rays (?reflections=1 for them): from where the camera stands they
   // only reach the cabin's door handle and gutter, and compiled out the frame is a fifth cheaper.
-  const reflections = params.get("reflections") === "1";
+  const reflections = options.get("reflections");
   // ?upscale=0.5: trace at that fraction of the output and resolve to it over frames (needs temporal).
   // On a phone the adaptive controller drives it instead (below): the output keeps its size and
   // the traced fraction follows the frame time.
-  const autoUpscale = phone && temporal && !params.has("upscale") && !FIXED_SCALE;
-  const upscale = autoUpscale ? 0.5 : Math.max(0.25, Math.min(1, num("upscale", 1)));
+  const autoUpscale = phone && temporal && !options.given("upscale") && !FIXED_SCALE;
+  const upscale = options.get("upscale", autoUpscale ? 0.5 : 1);
   renderer.setQuality({ ...QUALITY_PRESETS[quality], maxSteps: gpu.software ? 768 : 1024, shadowSteps: quality === "low" ? 0 : 128, temporal, reflections, upscale });
   if (gpu.software) gpu.renderScale = Math.min(gpu.renderScale, 0.3);
   else if (phone) gpu.renderScale = Math.min(gpu.renderScale, 0.6);
@@ -294,7 +314,7 @@ if (app) {
   // readyAround tests chunk centres, so half a chunk's diagonal more takes every chunk that
   // reaches into the disc; never more than the focus queues, or it would wait forever.
   // Behind the loading screen the main thread has nothing better to do than copy chunks in.
-  const NEAR = Math.min(REACH, m(Math.max(0, Math.min(VIEW, num("near", NEAR_M)))) + CHUNK * Math.SQRT1_2);
+  const NEAR = Math.min(REACH, m(Math.max(0, Math.min(VIEW, options.get("near", NEAR_M)))) + CHUNK * Math.SQRT1_2);
   await buildAround(world, C[0], C[1], NEAR, 40);
   await Promise.all([placed, compiled]);
 
@@ -345,8 +365,8 @@ if (app) {
   // Adreno 725), and below a quarter the picture goes soft.
   const outputScale = gpu.renderScale;
   const perf = autoUpscale
-    ? makePerf({ enabled: params.has("perf"), scale: upscale, minScale: 0.25, maxScale: 1, targetMs: 33.4, retryAfterMs: Infinity, gpuTimings: () => renderer.gpuTimings() })
-    : makePerf({ enabled: params.has("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.35, retryAfterMs: Infinity, gpuTimings: () => renderer.gpuTimings() });
+    ? makePerf({ enabled: options.get("perf"), scale: upscale, minScale: 0.25, maxScale: 1, targetMs: 33.4, retryAfterMs: Infinity, gpuTimings: () => renderer.gpuTimings() })
+    : makePerf({ enabled: options.get("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.35, retryAfterMs: Infinity, gpuTimings: () => renderer.gpuTimings() });
   let traced = upscale;
 
   // Night: the moon as the key light, a little brighter and bluer than the default night. The
@@ -356,12 +376,18 @@ if (app) {
   moon.lightColor = [moon.lightColor[0] * 2.2, moon.lightColor[1] * 2.5, moon.lightColor[2] * 3];
   moon.ambientSky = moon.ambientSky.map((c) => c * 2) as Vec3;
   moon.ambientGround = moon.ambientGround.map((c) => c * 2) as Vec3;
-  const weather = ATMOSPHERES[params.get("weather") as keyof typeof ATMOSPHERES] ?? ATMOSPHERES.fog;
-  const atm = atmosphereFrame(moon, weather, { voxelsPerMetre: VPM });
-  // Rays stop at the view distance (fog.distance), where the fog closes: past it nothing is traced.
-  const fog = atm.fog
-    ? { ...atm.fog, density: atm.fog.density * MIST, color: [0.095, 0.11, 0.14] as Vec3, distance: m(VIEW) }
-    : { density: 1.2 / m(30), color: [0.025, 0.035, 0.06] as Vec3, heightFalloff: 0, distance: m(VIEW) };
+  // The weather and how thick its fog is, times the engine's (?mist=): both change live.
+  const air = () => {
+    const atm = atmosphereFrame(moon, ATMOSPHERES[options.get("weather")], { voxelsPerMetre: VPM });
+    // Rays stop at the view distance (fog.distance), where the fog closes: past it nothing is traced.
+    const fog = atm.fog
+      ? { ...atm.fog, density: atm.fog.density * options.get("mist"), color: [0.095, 0.11, 0.14] as Vec3, distance: m(VIEW) }
+      : { density: 1.2 / m(30), color: [0.025, 0.035, 0.06] as Vec3, heightFalloff: 0, distance: m(VIEW) };
+    return { atm, fog };
+  };
+  let { atm, fog } = air();
+  options.on("weather", () => { ({ atm, fog } = air()); });
+  options.on("mist", () => { ({ atm, fog } = air()); });
 
   let last = performance.now();
   const t0 = performance.now();
@@ -388,7 +414,7 @@ if (app) {
   info.textContent =
     `${VPM} voxels/m${phone ? " (phone settings; ?full for all)" : ""} · ${trees} trees, ${shrubs} shrubs, ${plants} plants, ${FIREFLIES} fireflies · ` +
     "drag or click to look around (Q/E/R/F)";
-  void reportLoadTimeline(load, { perf: params.has("perf"), overlay: perf });
+  void reportLoadTimeline(load, { perf: options.get("perf"), overlay: perf });
 
   // --- the fine set, swapped in -------------------------------------------------------------------
   // It draws the coarse set until the fine bake applies; then the coarse models are released.
@@ -403,5 +429,5 @@ if (app) {
       .catch((err) => screen.fail(err))
       .finally(() => void worker.destroy());
   } else void placed.finally(() => void worker.destroy());
-  if (params.has("e2e")) Object.assign(window, { nightwood: { look: () => [look.yaw(), look.pitch()], flies: () => lights((performance.now() - t0) / 1000).length, detail: () => detail, pending: () => world.pending } });
+  if (options.get("e2e")) Object.assign(window, { nightwood: { look: () => [look.yaw(), look.pitch()], flies: () => lights((performance.now() - t0) / 1000).length, detail: () => detail, pending: () => world.pending } });
 }

@@ -12,6 +12,10 @@
 //
 // The behaviour (wander, turn, sniff, flee, die) is this page's own; the
 // engine only animates and stamps.
+//
+// URL options (declared below; the HUD's Options panel changes them): ?count= the rats (1-40,
+// default 8), ?seed=, ?perf (the overlay, and the load timeline in the console), ?e2e (hooks for
+// the input tests).
 
 import {
   createRenderer,
@@ -48,11 +52,17 @@ import { generateCreature, PRESETS, ROLE } from "@voxolith/gen-creature";
 import { boot, runLoop } from "../shared/boot";
 import { markFrames, prepared, reportLoadTimeline, step } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
+import { defineOptions, OPTION, seedOption } from "../shared/options";
 
-const params = new URLSearchParams(location.search);
-const COUNT = Math.max(1, Math.min(40, Number(params.get("count") ?? 8)));
+const options = defineOptions({
+  count: { kind: "number", label: "Rats", help: "How many rats roam the patch.", min: 1, max: 40, step: 1, integer: true, default: 8 },
+  seed: seedOption("rats"),
+  perf: OPTION.perf,
+  e2e: OPTION.e2e,
+});
+const COUNT = options.get("count");
 const SIZE = { x: 256, y: 96, z: 256 };
-const seed = hashSeed(params.get("seed") ?? "rats");
+const seed = hashSeed(options.get("seed"));
 const FPS = 12;
 const YAWS = 16;
 
@@ -68,6 +78,7 @@ const app = await boot("creature", {
     STEPS.pipelines,
     STEPS.ground,
   ],
+  options,
 });
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
@@ -303,7 +314,7 @@ if (app) {
   };
 
   // --- loop ------------------------------------------------------------------------
-  const perf = makePerf({ enabled: params.has("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.4, retryAfterMs: Infinity });
+  const perf = makePerf({ enabled: options.get("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.4, retryAfterMs: Infinity });
   const sky = atmosphereFrame(timeOfDay(0.42), ATMOSPHERES.clear);
   let last = performance.now(), stats = { bricks: 0, voxels: 0 };
   await compiled;
@@ -362,10 +373,10 @@ if (app) {
   observeResize(canvas, loop);
   screen.ready();
   markFrames(load, renderer);
-  void reportLoadTimeline(load, { perf: params.has("perf"), overlay: perf });
+  void reportLoadTimeline(load, { perf: options.get("perf"), overlay: perf });
 
   // For the end-to-end checks (tools/input-e2e.ts): where each rat is drawn, and what happened to it.
-  if (params.has("e2e")) {
+  if (options.get("e2e")) {
     Object.assign(window, {
       creatureRats: () => rats.map((r) => {
         const f = frame();

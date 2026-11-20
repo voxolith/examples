@@ -18,6 +18,7 @@ import { offline } from "./offline";
 import "./styles.css";
 import { NO_SCREEN, showLoadingScreen, type LoadingScreen, type LoadingStep } from "./loading-screen";
 import { initTheme } from "../brand/theme";
+import type { PageOptions } from "./options";
 
 const MARK = `<img src="${import.meta.env.BASE_URL}brand/logo-mark.svg" alt="" width="72" height="72">`;
 
@@ -34,12 +35,19 @@ export interface Booted {
 /**
  * Options for {@link boot}: the page's loading screen, as a line under its title and the steps
  * it shows (see `LoadingScreenOptions`). `STEPS.device` is the phase `boot` itself reports while
- * it starts WebGPU. A page that waits for the user first (minecraft-region) passes
+ * it starts WebGPU. `options` are the page's URL options, for the HUD's panel. A page that waits for the user first (minecraft-region) passes
  * `{ loading: false }` instead, and opens a screen of its own when its load starts.
  */
-export type BootOptions =
+export type BootOptions = (
   | { loading?: true; blurb?: string; steps: readonly LoadingStep[] }
-  | { loading: false };
+  | { loading: false }
+) & {
+  /**
+   * The page's URL options (`defineOptions`, ./options.ts): `boot` adds the HUD's Options button
+   * and its panel for them. A page without options gets no button.
+   */
+  options?: PageOptions<any>;
+};
 
 /**
  * Start a page: theme, canvas, WebGPU, and its load tracker and loading screen. Resolves with
@@ -67,6 +75,7 @@ export async function boot(appName: string, opts: BootOptions): Promise<Booted |
   try {
     const gpu = await initGpu(canvas);
     reportGpuErrors(gpu);
+    opts.options?.mount();
     return { gpu, canvas, info, load, screen };
   } catch (err) {
     if (err instanceof WebGPUUnsupportedError) {

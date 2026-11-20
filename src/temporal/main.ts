@@ -22,7 +22,8 @@
 // once converged; "Rotate" turns the camera, to read what a moving view costs.
 // The render scale is fixed (no adaptive scaling), so the numbers compare.
 //
-// URL options:
+// URL options (declared below; the HUD's Options panel changes them, most of them at once, the
+// quality, the starting heading, the seed and ?full by reloading):
 //   ?temporal=1          open with temporal accumulation on (default off)
 //   ?rotate              open auto-rotating
 //   ?always              open redrawing every frame
@@ -35,6 +36,7 @@
 //   ?ambient=1           sky light, as a multiple of the engine's own for that time (lower: darker shadows)
 //   ?yaw=305             the camera's starting heading in degrees
 //   ?show=1 | ?show=2    the renderer's development views: tiles traced / samples per pixel
+//   ?seed=               the scene's seed
 //   ?full                desktop settings on a phone
 //   ?e2e                 window.temporalStats() and window.temporalSet({ temporal, rotate, always, angle })
 
@@ -61,18 +63,29 @@ import { generateBuilding, PRESETS as BUILDINGS } from "@voxolith/gen-building";
 import { boot } from "../shared/boot";
 import { markFrames, nextFrame, prepared, reportLoadTimeline, step } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
-import { isPhone } from "../shared/scale";
+import { isPhone, phoneDevice } from "../shared/scale";
+import { defineOptions, OPTION, seedOption } from "../shared/options";
 
-const params = new URLSearchParams(location.search);
-const num = (k: string, d: number) => {
-  const v = Number(params.get(k));
-  return params.has(k) && Number.isFinite(v) ? v : d;
-};
+const options = defineOptions({
+  temporal: { kind: "toggle", label: "Temporal accumulation", help: "Keep shadows and AO per pixel across frames and stop tracing them once converged (T).", default: false, live: true },
+  rotate: { kind: "toggle", label: "Rotate", help: "Turn the camera, to read what a moving view costs.", default: false, live: true },
+  always: { kind: "toggle", label: "Redraw always", help: "Draw every frame even when nothing changes, to read what a still frame costs.", default: false, live: true },
+  renderScale: { kind: "number", label: "Render scale", help: "The fixed fraction of the canvas that is rendered (0.5 on a phone, 0.3 on a CPU adapter).", min: 0.1, max: 1, step: 0.1, default: 0.8, live: true },
+  quality: { kind: "choice", label: "Quality", help: "The renderer's preset. Low has no shadows or AO, so nothing to accumulate.", values: ["low", "medium", "high"], default: "medium" },
+  angle: { kind: "number", label: "Moon size", help: "The moon's angular radius in radians: soft shadow edges with temporal on.", min: 0, max: 0.2, step: 0.005, default: 0.02, live: true },
+  time: { kind: "number", label: "Time of day", help: "0 midnight to 0.5 noon; 0.1 is night with the moon 34° up.", min: 0, max: 1, step: 0.05, default: 0.1, live: true },
+  ambient: { kind: "number", label: "Sky light", help: "A multiple of the engine's own for that time; lower gives darker shadows.", min: 0, max: 4, step: 0.25, default: 1, live: true },
+  yaw: { kind: "number", label: "Starting heading", help: "The camera's heading when the page opens, in degrees.", min: -360, max: 720, step: 15, default: 305 },
+  seed: seedOption("temporal"),
+  full: OPTION.full,
+  show: { kind: "number", label: "Development view", help: "The renderer's own: 1 tiles traced, 2 samples per pixel.", min: 0, max: 9, step: 1, default: 0, hidden: true },
+  e2e: OPTION.e2e,
+});
 // 32 m square: small enough to build in a moment on a phone.
 const SIZE = { x: 320, y: 128, z: 320 };
 const C = SIZE.x / 2;
-const seed = hashSeed(params.get("seed") ?? "temporal");
-const show = num("show", 0);
+const seed = hashSeed(options.get("seed"));
+const show = options.get("show");
 if (show) (globalThis as { __voxolithTemporal?: object }).__voxolithTemporal = { show };
 
 // Night, lit by the moon. timeOfDay's own moonlight is too dim to judge
@@ -108,11 +121,13 @@ const app = await boot("temporal", {
     STEPS.pipelines,
     { phase: "scene", label: "Building the scene" },
   ],
+  options,
 });
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
   const t0 = performance.now();
-  const phone = isPhone(gpu, params);
+  if (!phoneDevice(gpu)) options.hide("full");
+  const phone = isPhone(gpu, options.get("full"));
   const rng = seededRandom(seed);
 
   // --- ground ------------------------------------------------------------------
@@ -166,13 +181,12 @@ if (app) {
   // --- renderer ----------------------------------------------------------------------
   const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
-  const asked = params.get("quality") as QualityPreset | null;
-  const quality: QualityPreset = asked && asked in QUALITY_PRESETS ? asked : gpu.software ? "low" : "medium";
-  let temporal = params.get("temporal") === "1";
+  const quality: QualityPreset = options.get("quality", gpu.software ? "low" : "medium");
+  let temporal = options.get("temporal");
   renderer.setQuality({ ...QUALITY_PRESETS[quality], temporal });
   // Temporal accumulates the shadows and AO; the Low preset has neither.
   const canAccumulate = QUALITY_PRESETS[quality].shadowSteps > 0 || QUALITY_PRESETS[quality].ao;
-  gpu.renderScale = Math.max(0.1, Math.min(1, num("renderScale", gpu.software ? 0.3 : phone ? 0.5 : gpu.renderScale)));
+  gpu.renderScale = Math.max(0.1, Math.min(1, options.get("renderScale", gpu.software ? 0.3 : phone ? 0.5 : gpu.renderScale)));
   // deferPipelines above: compile the pipelines of the mode the page opens in while the scene is
   // built, and await them before the first frame. The other mode's compile after the first picture.
   const compiled = prepared(renderer.prepare({ temporal }));
@@ -212,11 +226,10 @@ if (app) {
   renderer.setLights(lights);
 
   // --- camera and loop ------------------------------------------------------------------
-  const phase = num("time", NIGHT);
-  const sky = lighting(phase, Math.max(0, num("ambient", 1)));
-  let lightAngle = Math.max(0, Math.min(0.2, num("angle", 0.02)));
-  let rotate = params.has("rotate");
-  let always = params.has("always");
+  let sky = lighting(options.get("time", NIGHT), options.get("ambient"));
+  let lightAngle = options.get("angle");
+  let rotate = options.get("rotate");
+  let always = options.get("always");
   // Start further out on a portrait screen, whose horizontal view is narrow.
   const aspect = canvas.clientWidth / Math.max(1, canvas.clientHeight);
   const dist0 = Math.round(300 * Math.min(1.8, Math.max(1, 0.75 / aspect)));
@@ -224,7 +237,7 @@ if (app) {
   prepareSurface(canvas, { contextMenu: false });
   const input = createInput(canvas, { loop: { invalidate: () => loop.invalidate() } });
   const orbit = makeOrbitController(input, {
-    yaw: num("yaw", 305), pitch: 30, distance: dist0, distanceLimits: [60, 700], pitchLimits: [6, 85], fovDeg: 42,
+    yaw: options.get("yaw"), pitch: 30, distance: dist0, distanceLimits: [60, 700], pitchLimits: [6, 85], fovDeg: 42,
     target: [C, pad + 24, C], pan: "secondary", panBounds: { minX: 0, maxX: SIZE.x, minZ: 0, maxZ: SIZE.z },
   });
 
@@ -270,18 +283,31 @@ if (app) {
     temporal = on;
     renderer.setQuality({ ...renderer.getQuality(), temporal });
     sinceToggle = 0;
+    options.sync("temporal", temporal);
     sync();
     loop.invalidate();
   };
+  // The readout's buttons and the Options panel change the same options: each tells the other.
+  const setRotate = (on: boolean) => { rotate = on; options.sync("rotate", on); sync(); syncLoop(); };
+  const setAlways = (on: boolean) => { always = on; options.sync("always", on); sync(); syncLoop(); };
+  const setAngle = (a: number) => { lightAngle = a; options.sync("angle", a); sync(); loop.invalidate(); };
   temporalBtn?.addEventListener("click", () => setTemporal(!temporal));
-  rotateBtn?.addEventListener("click", () => { rotate = !rotate; sync(); syncLoop(); });
-  redrawBtn?.addEventListener("click", () => { always = !always; sync(); syncLoop(); });
+  rotateBtn?.addEventListener("click", () => setRotate(!rotate));
+  redrawBtn?.addEventListener("click", () => setAlways(!always));
+  options.on("temporal", setTemporal);
+  options.on("rotate", setRotate);
+  options.on("always", setAlways);
+  options.on("angle", setAngle);
+  options.on("renderScale", (v) => { gpu.renderScale = v; sinceToggle = 0; loop.invalidate(); });
+  const relight = () => { sky = lighting(options.get("time"), options.get("ambient")); sinceToggle = 0; loop.invalidate(); };
+  options.on("time", relight);
+  options.on("ambient", relight);
   if (angleSel) {
     // The moon's angular radius: soft penumbrae with temporal on, hard shadows without.
     const angles: [number, string][] = [[0.005, "Moon 0.3°"], [0.02, "Moon 1.1°"], [0.05, "Moon 2.9°"], [0.1, "Moon 5.7°"]];
     if (!angles.some(([a]) => a === lightAngle)) angles.push([lightAngle, `Moon ${((lightAngle * 180) / Math.PI).toFixed(1)}°`]);
     for (const [a, label] of angles) angleSel.append(new Option(label, String(a)));
-    angleSel.addEventListener("change", () => { lightAngle = Number(angleSel.value); loop.invalidate(); });
+    angleSel.addEventListener("change", () => setAngle(Number(angleSel.value)));
   }
   input.captureKeys(["KeyT"]);
   input.on((e) => {
@@ -321,7 +347,7 @@ if (app) {
   };
   setInterval(tick, 250);
 
-  if (params.has("e2e")) {
+  if (options.get("e2e")) {
     Object.assign(window, {
       temporalStats: () => ({
         fps, gpuMs: gpuMs(), timings: renderer.gpuTimings(), temporal, converging: renderer.converging(),
