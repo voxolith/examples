@@ -63,6 +63,9 @@ if (app) {
   const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   renderer.setQuality(gpu.software ? "low" : "high");
+  // A software adapter (SwiftShader) takes seconds for a full-size frame of posed rats, and the
+  // page redraws continuously: draw at under a third of the size, as valley and nightwood do.
+  if (gpu.software) gpu.renderScale = Math.min(gpu.renderScale, 0.3);
   renderer.edit({ x0: 0, y0: 0, z0: 0, x1: SIZE.x - 1, y1: 3, z1: SIZE.z - 1 }, (cells, ox, oy) => {
     for (let z = 0; z < 8; z++) for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++)
       if (oy + y <= 3) cells[x + y * 8 + z * 64] = groundBase + (((ox + x) % PAIR) < GAP ? 0 : 1);
