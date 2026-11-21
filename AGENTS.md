@@ -106,8 +106,10 @@ Siblings needed: renderer, engine, generators.
   (`generateTerrain(params, seed, { heights })`); falls back to this thread. valley and world use
   it; valley overlaps it with the model requests and the renderer (the palette takes the
   terrain's roles from `buildRoles`, which need no heights).
-- `src/shared/scale.ts`: the voxel scale of `valley` and `nightwood`: `isPhone` (the phone
-  profile test, `phoneDevice` without `?full`) and `vpmOption` (the pages' `?vpm=` declaration:
+- `src/shared/scale.ts`: `phoneProfile(gpu, options)`, the one phone test every page calls after
+  `boot` (a `phoneDevice`: a touch-only pointer, or storage bindings under 512 MiB; not with
+  `?full`; forced on a desktop by the hidden `?phone`), and the voxel scale of `valley` and
+  `nightwood`: `vpmOption` (the pages' `?vpm=` declaration:
   10, 20, 30, 40 or 50 on every page that has one, anything else snapped, so `?vpm=100` gives 50;
   valley and nightwood default to 50, or 20 on a phone, bench to 20, rigged to 10).
 - `src/shared/options.ts`: **a page's URL options, declared once** (`defineOptions({ key: { kind,
@@ -118,15 +120,34 @@ Siblings needed: renderer, engine, generators.
   rewrites the query in place; everything else is staged and applied by "Apply and reload". A
   HUD control or key for the same option calls `options.sync(key, value)`. `hidden: true` keeps a
   developer switch (`?e2e`, `?hold=`) out of the panel. Shared declarations live there too:
-  `OPTION` (perf, full, e2e, selftest), `seedOption` and `RENDER_OPTIONS` (quality, temporal,
-  upscale, reflections, renderScale, debug: the renderer's knobs, with the same names and help on
-  every page).
+  `OPTION` (perf, full, phone, e2e, selftest), `seedOption` and `RENDER_OPTIONS` (quality,
+  temporal, upscale, reflections, renderScale, debug: the renderer's knobs, with the same names
+  and help on every page; and with them perf, full and the hidden phone, the phone profile's
+  switches).
 - `src/shared/quality.ts`: `applyRenderOptions(options, renderer, { preset, tweak, changed })`
   reads `RENDER_OPTIONS`, sets the renderer's quality (the page gives its device preset and its
   scene's step caps) and applies the panel's changes live, compiling a new pipeline variant before
-  switching to it. Every page with a panel uses it (nightwood, temporal and bench read the same
-  declarations with logic of their own); a page draws at `render.fixedScale() || perf.scale()`. Never read `location.search` in a page:
+  switching to it. Every page uses it (temporal and bench read the same declarations with logic
+  of their own); a page draws at `gpu.renderScale = render.pace(now, ownScale)`, which on a
+  desktop is `?renderScale=` or the page's own scale. Never read `location.search` in a page:
   add the option to its declaration, and to its header comment and docs page.
+- **The phone profile** is in the same file: `PHONE` (Medium, temporal accumulation on,
+  reflections off, output scale 0.6, a 256-step cap where the page's `tweak` gives none) is what
+  `applyRenderOptions` defaults to when the page passes `{ gpu, phone }`, and `makeTracedFraction`
+  adapts `RenderQuality.upscale` to the frame time between a floor of 0.35 and 1 (its rules are in
+  its doc comment: GPU time where there are timestamp queries, a level predicted to fit taken in
+  one step, a wide dead band, 45 frames of settling, a minute's memory of what was too slow).
+  A page whose subject always moves (chase, rigged, instances) passes `moving: true`: the same
+  fraction then shrinks the render scale itself (0.6 x 0.35 = 0.21 at the floor) with nothing
+  upscaled, because the resolve smears what moves (compared side by side on the chase rat).
+  `render.adaptive()` says whether it runs; a page with `makePerf` passes it as `locked`, since
+  the output then keeps its size. `?upscale=0` asks for it on any device, `?upscale=0.5` pins the
+  fraction, `?full` gives the desktop settings. `?perf` shows the frame rate and the traced
+  fraction (`.pace`, the last line of the HUD bar), and `window.renderPace()` returns them. The hidden
+  `?phone=45` also multiplies the GPU time the controller reads, to see on a desktop where a GPU
+  that much slower would settle (the picture, not the frame rate). A CPU adapter never gets the
+  profile. `bench` takes no part in any of it: it has no phone test, and its `?upscale=` stays a
+  fixed fraction. Phone frame rates are judged on a phone, never from a desktop.
 - `src/world/layout.ts`: the shared valley design (terrain, sites, houses, pads, paths,
   scatter). `world` (10 vox/m) and `valley` (50 vox/m by default, 20 on a phone, 10 to 50 with
   `?vpm=`) both read it; change the layout there, never in one page. The valley's rats are built
@@ -148,8 +169,11 @@ Siblings needed: renderer, engine, generators.
 - Every page declares its URL options with `defineOptions` (`src/shared/options.ts`), which also
   puts them in the HUD's Options panel, and documents them in its header comment and on its docs
   page.
-- Heavy pages give phones a lighter profile: a touch-only pointer, or storage bindings under
-  512 MiB, get fewer voxels per metre and a lower preset; `?full` overrides.
+- Every page gives phones the phone profile: `const phone = phoneProfile(gpu, options)`, then
+  `applyRenderOptions(options, renderer, { gpu, phone, preset })` for the renderer and
+  `options.get("count", phone ? 120 : 300)` for whatever of its content multiplies the ray walk
+  (voxels per metre, instances, crowd sizes, variants, the map's size). The panel then shows the
+  phone's values as defaults, an explicit option wins, and `?full` gives the desktop's.
 - Pages that render continuously with a still camera pass `retryAfterMs: Infinity` to
   `makePerf` and call `perf.reprobe()` when the view moves.
 - A page that only draws after user input must be declared `needsInput` in the maintainer's

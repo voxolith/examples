@@ -150,6 +150,14 @@ export const OPTION = {
   perf: { kind: "toggle", label: "Performance overlay", help: "Frame time, GPU time and the adaptive render scale; the load timeline goes to the console.", default: false },
   /** `?full`: the desktop profile on a phone. Pages hide it where the device gets no phone profile. */
   full: { kind: "toggle", label: "Desktop settings", help: "Skip the lighter phone profile on this device.", default: false },
+  /**
+   * `?phone`: the phone profile on any device, to look at it on a desktop (the GPU stays the
+   * desktop's, so it says nothing about a phone's frame rate). `?phone=45` also makes the traced
+   * fraction's controller read every GPU time 45 times longer, so it settles where a GPU that
+   * much slower would: the picture such a phone would get, not its frame rate. Hidden; `?full`
+   * still wins, and `?phone=0` is off.
+   */
+  phone: { kind: "text", label: "Phone profile", help: "Apply the phone profile on this device; a number also slows the GPU time its controller reads by that factor.", default: "", hidden: true },
   /** `?e2e`: the page's window hooks for the test tools. Hidden. */
   e2e: { kind: "toggle", label: "Test hooks", help: "Expose the page's window hooks for the test tools.", default: false, hidden: true },
   /** `?selftest=`: the renderer's voxel-lookup self-test bands (setDebug 7 to 9). Hidden. */
@@ -160,7 +168,9 @@ export const OPTION = {
  * The renderer's cost and quality knobs, under the same names and help on every page that offers
  * them: spread into the page's declaration and hand the options to `applyRenderOptions`
  * (./quality.ts), which reads them, sets the renderer's quality and applies changes live. A page
- * with a fixed render scale (bench, temporal) spreads `renderScale` with its own range.
+ * with a fixed render scale (bench, temporal) spreads `renderScale` with its own range. With them
+ * come the three switches of the phone profile (./scale.ts `phoneProfile`): `perf`, `full` and
+ * the hidden `phone`.
  */
 export const RENDER_OPTIONS = {
   /** `?quality=low|medium|high`: `QUALITY_PRESETS`; the page gives the device's default. */
@@ -168,13 +178,19 @@ export const RENDER_OPTIONS = {
   /** `?temporal=1`: `RenderQuality.temporal`. */
   temporal: { kind: "toggle", label: "Temporal accumulation", help: "Keep shadows and ambient occlusion per pixel across frames and trace them only until they have converged; shadows turn soft. Nothing to accumulate on the low preset.", default: false, live: true },
   /** `?upscale=0.5`: `RenderQuality.upscale`. */
-  upscale: { kind: "number", label: "Traced fraction", help: "With temporal accumulation on: trace at this fraction of the output size and resolve to it over frames.", min: 0.25, max: 1, step: 0.25, default: 1, live: true },
+  upscale: { kind: "number", label: "Traced fraction", help: "With temporal accumulation on: trace at this fraction of the output size and resolve to it over frames. 0 adapts it to the frame time, which is a phone's default.", min: 0, max: 1, step: 0.25, default: 1, live: true },
   /** `?reflections=0`: `RenderQuality.reflections`. */
   reflections: { kind: "toggle", label: "Reflections", help: "Water, metal and glass trace their secondary rays. Off compiles them out, which makes every pixel cheaper.", default: true, live: true },
   /** `?renderScale=0.5`: a fixed `gpu.renderScale`; 0 leaves it to the page (adaptive where it has `makePerf`). */
   renderScale: { kind: "number", label: "Render scale", help: "A fixed fraction of the canvas to render; 0 lets the page pick, and adapt it to the frame time where it does.", min: 0, max: 2, step: 0.1, default: 0, live: true },
   /** `?debug=10|1`: `Renderer.setDebug`. */
   debug: { kind: "choice", label: "Debug view", help: "The renderer's own views: how many steps each primary ray took (blue few, red the cap), or the walk without empty-space skipping.", values: [0, 10, 1], default: 0, live: true, format: (v: number) => (v === 10 ? "Step heatmap" : v === 1 ? "No skipping" : "Off") },
+  /** `?perf`: the frame rate, and on a phone the traced fraction (./quality.ts); makePerf's overlay where the page has one. */
+  perf: OPTION.perf,
+  /** `?full`: the desktop settings on a phone (./scale.ts `phoneProfile` hides it elsewhere). */
+  full: OPTION.full,
+  /** `?phone`: the phone profile on a desktop. Hidden. */
+  phone: OPTION.phone,
 } as const satisfies Record<string, OptionSpec>;
 
 /** `?seed=`: the text every random choice on the page derives from. */

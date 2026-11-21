@@ -19,7 +19,7 @@
 // once, the rest by reloading): ?scale= the valley's size in tiles (1-8, default 4), ?seed=,
 // ?season=, ?time=night, ?weather=, ?sky=physical (the engine's physical sky), ?variants= the models per species (default 10), ?radius= the
 // streamed radius in voxels (default: the whole valley), ?still, ?perf, and the renderer's own, as on every page:
-// ?quality=, ?temporal=1, ?upscale=, ?reflections=0, ?renderScale=, ?debug=; and for tools, not in the
+// ?quality=, ?temporal=1, ?upscale=, ?reflections=0, ?renderScale=, ?debug=, ?full (desktop settings on a phone); and for tools, not in the
 // panel: ?workers=0 (generate on this thread), ?selftest=, ?e2e.
 
 import {
@@ -65,6 +65,7 @@ import { STEPS } from "../shared/loading-screen";
 import { groundFill } from "../shared/ground";
 import { terrainOffThread } from "../shared/terrain";
 import { defineOptions, OPTION, RENDER_OPTIONS, seedOption } from "../shared/options";
+import { phoneProfile } from "../shared/scale";
 import { applyRenderOptions } from "../shared/quality";
 import { VALLEY_OPTIONS } from "./options";
 
@@ -82,8 +83,6 @@ const options = defineOptions({
   selftest: OPTION.selftest,
   e2e: OPTION.e2e,
 });
-const SPAN = options.get("scale");
-const SIZE = { x: TILE * SPAN, y: 192, z: TILE * SPAN };
 
 const seed = hashSeed(options.get("seed"));
 const season: Season = options.get("season");
@@ -106,6 +105,12 @@ const app = await boot("world", {
 });
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
+  // A phone (../shared/scale.ts) gets the renderer's phone profile through applyRenderOptions
+  // below, and the whole valley: everything here is stamped into the world, and a smaller map
+  // drew no faster (measured at the phone profile: 1.2 ms at 2 tiles, 1.1 at 4).
+  const phone = phoneProfile(gpu, options);
+  const SPAN = options.get("scale");
+  const SIZE = { x: TILE * SPAN, y: 192, z: TILE * SPAN };
   // One tracker for the whole load (boot's): the renderer, the generator workers and the chunked
   // world report into it, the page adds its own "layout" phase, and the loading screen shows it.
 
@@ -143,9 +148,10 @@ if (app) {
   if (options.given("selftest")) { const st = options.get("selftest"); renderer.setDebug(st === "3" ? 9 : st === "2" ? 8 : 7); }
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   // The step cap grows with the valley: a ray may cross all of it.
-  const render = applyRenderOptions(options, renderer, {
+  const render = applyRenderOptions(options, renderer, { gpu, phone,
     preset: gpu.software ? "low" : "medium",
-    tweak: (preset) => ({ maxSteps: Math.min(4096, QUALITY_PRESETS[preset].maxSteps * SPAN) }),
+    // (A phone takes Low's cap per tile whatever the preset: steps are what it is slowest at.)
+    tweak: (preset, phone) => ({ maxSteps: Math.min(4096, QUALITY_PRESETS[phone ? "low" : preset].maxSteps * SPAN) }),
     changed: () => loop.invalidate(),
   });
   const quality = render.preset();
@@ -185,7 +191,7 @@ if (app) {
     maxSampleMs: 4000,
     // The water keeps this page rendering while the view is still; never
     // re-probe then, or each probe shows as a faint resample of the image.
-    retryAfterMs: Infinity,
+    retryAfterMs: Infinity, locked: render.adaptive(),
     label: perfLabel,
   });
 
@@ -220,7 +226,7 @@ if (app) {
     if (!compiledYet) return;
     streamWorld?.();
     perf.frame(now);
-    gpu.renderScale = render.fixedScale() || perf.scale();
+    gpu.renderScale = render.pace(now, perf.scale());
     resizeToDisplay(gpu);
     if (spin) orbit.set({ yaw: orbit.yaw() + dt * 3.2 });
     if (phase < phaseTarget) phase = Math.min(phaseTarget, phase + dt * (0.5 / TRANSITION_S));

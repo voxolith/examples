@@ -1,6 +1,11 @@
 // orbit: a procedural terrain grid written directly into the voxel array, and
 // the engine's orbit controller: drag to turn, wheel or pinch to zoom,
 // right-drag or two fingers to pan.
+//
+// The page has no options of its own, only the ones every page shares (the HUD's Options panel):
+// the renderer's ?quality=, ?temporal=1, ?upscale=, ?reflections=0, ?renderScale=, ?debug=, and
+// ?perf. A phone gets the phone profile (../shared/quality.ts); ?full gives it the desktop
+// settings. ?selftest= is a developer's switch.
 
 import { createRenderer, makeCamera, observeResize, resizeToDisplay } from "@voxolith/renderer";
 import { createInput, makeOrbitController, prepareSurface } from "@voxolith/engine/input";
@@ -8,12 +13,16 @@ import { trackRenderer } from "@voxolith/engine";
 import { boot, runLoop } from "../shared/boot";
 import { markFrames, prepared, reportLoadTimeline } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
-import { defineOptions, OPTION } from "../shared/options";
+import { defineOptions, OPTION, RENDER_OPTIONS } from "../shared/options";
+import { applyRenderOptions } from "../shared/quality";
+import { phoneProfile } from "../shared/scale";
 import { classicSky } from "@voxolith/engine/atmosphere";
 import { DAYLIGHT } from "../shared/env";
 
 // The loading screen's rows, in this order (phases not listed are not shown, but stay on the
 // tracker for window.loadTimeline and ?perf).
+// ?selftest: bands showing which stage of the voxel lookup works on this GPU (hidden: a developer's switch).
+const options = defineOptions({ ...RENDER_OPTIONS, selftest: OPTION.selftest });
 const app = await boot("orbit", {
   blurb: "Procedural hills to orbit",
   steps: [
@@ -21,6 +30,7 @@ const app = await boot("orbit", {
     STEPS.shaders,
     STEPS.pipelines,
   ],
+  options,
 });
 if (app) {
   const { gpu, canvas, load, screen } = app;
@@ -45,12 +55,11 @@ if (app) {
   palette.set([0.25, 0.5, 0.85, 1], WATER * 4);
 
   const renderer = await createRenderer(gpu, { size, data, palette }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
-  // ?selftest: bands showing which stage of the voxel lookup works on this GPU. A developer's
-  // switch, declared hidden, so this page has no Options button.
-  const options = defineOptions({ selftest: OPTION.selftest });
   if (options.given("selftest")) { const st = options.get("selftest"); renderer.setDebug(st === "3" ? 9 : st === "2" ? 8 : 7); }
-  // A CPU adapter (SwiftShader) starts on the Low preset: no shadows or ambient occlusion.
-  if (gpu.software) renderer.setQuality("low");
+  // A CPU adapter (SwiftShader) starts on the Low preset: no shadows or ambient occlusion; a
+  // phone gets the phone profile. The quality comes from the page's options.
+  const render = applyRenderOptions(options, renderer, { gpu, phone: phoneProfile(gpu, options), preset: gpu.software ? "low" : "high", changed: () => loop.invalidate() });
+  const scale = gpu.renderScale;
   renderer.setFloor({ enabled: true, y: 0, colorA: [0.3, 0.32, 0.36], colorB: [0.24, 0.26, 0.3] });
 
   // Nothing animates here, so render on demand: the loop only draws when
@@ -58,10 +67,12 @@ if (app) {
   const camera = makeCamera({ target: [size.x / 2, 8, size.z / 2], distance: 200, pitchDeg: 32, fovDeg: 35 });
   // deferPipelines above: compile the pipelines before the first frame.
   await prepared(renderer.prepare());
-  const loop = runLoop(() => {
+  const loop = runLoop((now) => {
+    gpu.renderScale = render.pace(now, scale);
     resizeToDisplay(gpu);
     renderer.render({ ...camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch()), ...DAYLIGHT });
-  }, false);
+    // With temporal accumulation (a phone's default) a still view draws until it has settled.
+  }, false, () => renderer.converging());
   observeResize(canvas, loop);
 
   // One input per surface; the controller reads it. Passing the loop makes

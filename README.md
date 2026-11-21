@@ -18,7 +18,7 @@ on top of the shared plumbing in `src/shared/`; each has a page in the
 |---|---|---|
 | [`hello-vox`](src/hello-vox/main.ts) | load a `.vox`, `parseVox`, `createRenderer`, `makeCamera`, render loop | ~55 |
 | [`orbit`](src/orbit/main.ts) | writing a procedural grid by hand, `createInput` + `makeOrbitController` (drag, wheel, pinch, right-drag pan), `setFloor` | ~75 |
-| [`minecraft-region`](src/minecraft-region/main.ts) | drop a Minecraft `.mca`, `buildMinecraftRegion` crop and downsample, `firstPersonFrame` free-fly with `makeActions`, `makeLookController` (pointer lock) and a touch joystick | ~110 |
+| [`minecraft-region`](src/minecraft-region/main.ts) | drop a Minecraft `.mca` (or pick one with the Open button), `buildMinecraftRegion` crop and downsample, `firstPersonFrame` free-fly with `makeActions`, `makeLookController` (pointer lock) and a touch joystick | ~110 |
 | [`world`](src/world/main.ts) | a whole valley from the generators: `gen-terrain` ground and a river with animated water, a village laid out on it (sites, levelled pads, footpaths) and a forest that fades into it, streamed with `makeChunkedWorld`; a draggable lamp (`setLights`), day/night (`timeOfDay`, `N`, `?time=night`) and weather (`@voxolith/engine/atmosphere`, `W`, `?weather=rain`) | ~520 |
 | [`creature`](src/creature/main.ts) | rigged, animated rats from `gen-creature`: `makeAnimator`, `bakePose` through a pose cache, `makeBrickStamper`; tap to `wound`, tap again to `sever` (gibs, blood) | ~400 |
 | [`valley`](src/valley/main.ts) | the world's valley at 50 voxels per metre (10 to 50 with `?vpm=`) from the same layout (`world/layout.ts`): generators refined down to 2 cm voxels (`{ voxelsPerMetre }`), every model drawn as instances (`makeInstanceLayer`, `orientationYaw`), `refineTerrain` ground with grass blades streamed in chunks, rats as an instanced crowd sized to the scale (real size at 50, larger than life and fewer at 40 and 30, none at 20 and 10 unless `?rats=` asks); models cached in IndexedDB after the first visit; phones get a lighter profile at 20 vox/m (`?full` for the desktop one); `?vpm=`, `?variants=`, `?rats=`, `?radius=` | ~690 |
@@ -39,9 +39,16 @@ Every URL option a page takes (`?vpm=`, `?count=`, `?weather=`, ...) is declared
 Options button opens a panel (a bottom sheet on a phone) that applies what it can at once and
 reloads for the rest, keeping the URL shareable.
 
+Every page gives a phone (a touch-only pointer, or a GPU with small storage bindings) a lighter
+profile from one place, `src/shared/quality.ts`: temporal accumulation on, reflections off, and
+the scene traced at a fraction of the output that follows the frame time, plus less of whatever
+the page has many of (voxels per metre, trees, rats). The panel shows the phone's values, any
+option overrides them, `?full` gives the desktop settings, and `?perf` shows the frame rate and
+the traced fraction.
+
 Shared (`src/shared/`): `boot.ts` (WebGPU init, the unsupported-browser card, the load tracker and
 its loading screen), `loading-screen.ts` and `loading.ts` (the loading screen and load timeline),
-`options.ts` and `quality.ts` (URL options, their panel, and the renderer's quality knobs every page shares), `env.ts` (lighting and sky values for `FrameParams`), `voxGrid.ts` (MagicaVoxel model to Y-up dense
+`options.ts` and `quality.ts` (URL options, their panel, the renderer's quality knobs every page shares, and the phone profile), `env.ts` (lighting and sky values for `FrameParams`), `voxGrid.ts` (MagicaVoxel model to Y-up dense
 grid), and the worker plumbing of the heavy pages (`placement.ts`, `ground.ts`, `terrain.ts`,
 `detail.ts`, `scale.ts`).
 

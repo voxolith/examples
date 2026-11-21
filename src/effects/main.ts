@@ -29,6 +29,8 @@
 //   ?time=0.73           time of day, 0 midnight to 0.5 noon (default dusk, so the lights show)
 //   ?seed=               where the Fire button's shots land
 //   ?quality=, ?temporal=1, ?upscale=, ?reflections=0, ?renderScale=, ?debug=   the renderer's own
+//   ?perf, ?full                                 the frame rate (and a phone's traced fraction); a phone gets the phone
+//                                                profile (../shared/quality.ts), ?full the desktop settings
 //   ?e2e                 window.effectsStats() and window.effectsFire() for the test tools
 
 import { createRenderer, GridStamper, makeCamera, makeExplosion, makeMuzzleFlash, makeRay, observeResize, resizeToDisplay, voxelRaycast, type ExplosionSize, type MuzzleType, type PointLight, type StampVoxel, type Vec3, type VoxEffect } from "@voxolith/renderer";
@@ -40,6 +42,7 @@ import { boot, runLoop } from "../shared/boot";
 import { markFrames, prepared, reportLoadTimeline, step } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
 import { defineOptions, OPTION, RENDER_OPTIONS, seedOption } from "../shared/options";
+import { phoneProfile } from "../shared/scale";
 import { applyRenderOptions } from "../shared/quality";
 
 const options = defineOptions({
@@ -65,6 +68,8 @@ const app = await boot("effects", {
 });
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
+  // A phone (../shared/scale.ts) gets the phone profile: the renderer's through applyRenderOptions below.
+  const phone = phoneProfile(gpu, options);
   const rng = seededRandom(hashSeed(options.get("seed")));
 
   // --- palette: the scene's slots, then seven for the effects' fire ramp ----------------------
@@ -122,7 +127,7 @@ if (app) {
   // Effects appear in what was empty air: clip rays to the whole grid, not to the scene as built.
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   // A CPU adapter (SwiftShader) starts on the Low preset, and draws small.
-  const render = applyRenderOptions(options, renderer, { preset: gpu.software ? "low" : "medium", changed: () => loop.invalidate() });
+  const render = applyRenderOptions(options, renderer, { gpu, phone, preset: gpu.software ? "low" : "medium", changed: () => loop.invalidate() });
   const scale = gpu.software ? Math.min(gpu.renderScale, 0.3) : gpu.renderScale;
   await prepared(renderer.prepare());
 
@@ -171,7 +176,7 @@ if (app) {
   const orbit = makeOrbitController(input, { yaw: 345, pitch: 14, distance: 250, distanceLimits: [60, 500], pitchLimits: [4, 85], fovDeg: 42, target });
   const frame = () => camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch());
   let sinceShot = 0, stamped = 0;
-  const loop = runLoop((_now, dtRaw) => {
+  const loop = runLoop((now, dtRaw) => {
     const dt = Math.min(0.05, dtRaw);
     if (options.get("auto") && (sinceShot += dt) > 1.1) { sinceShot = 0; fireAtWall(); }
     // Advance everything, and collect this frame's voxels in one list.
@@ -206,7 +211,7 @@ if (app) {
     stamped = voxels.length;
     renderer.setLights(lights);
     loop.setContinuous(options.get("auto") || burning.length > 0 || balls.length > 0);
-    gpu.renderScale = render.fixedScale() || scale;
+    gpu.renderScale = render.pace(now, scale);
     resizeToDisplay(gpu);
     renderer.render({ ...frame(), ...sky });
   }, options.get("auto"), () => renderer.converging());

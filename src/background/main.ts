@@ -25,6 +25,8 @@
 //   ?stars=0.8           star brightness, 0 to 1 (they fade as the sun climbs)
 //   ?animate             pass the frame time: stars twinkle, water ripples
 //   ?quality=, ?temporal=1, ?upscale=, ?reflections=0, ?renderScale=, ?debug=   the renderer's own
+//   ?perf, ?full                                 the frame rate (and a phone's traced fraction); a phone gets the phone
+//                                                profile (../shared/quality.ts), ?full the desktop settings
 
 import { createRenderer, gradientBackgroundParams, makeCamera, observeResize, resizeToDisplay, BACKGROUND_FLOATS, type Renderer, type Vec3 } from "@voxolith/renderer";
 import { PaletteAllocator, trackRenderer, type Role } from "@voxolith/engine";
@@ -33,6 +35,7 @@ import { boot, runLoop } from "../shared/boot";
 import { markFrames, prepared, reportLoadTimeline, step } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
 import { defineOptions, RENDER_OPTIONS } from "../shared/options";
+import { phoneProfile } from "../shared/scale";
 import { applyRenderOptions, type RenderControls } from "../shared/quality";
 
 /**
@@ -101,6 +104,8 @@ const app = await boot("background", {
 });
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
+  // A phone (../shared/scale.ts) gets the phone profile: the renderer's through applyRenderOptions below.
+  const phone = phoneProfile(gpu, options);
 
   // --- the scene: an island with a pond and a chrome ball, to reflect the sky -----------
   const size = { x: 128, y: 56, z: 128 };
@@ -180,7 +185,7 @@ if (app) {
     });
     first = false;
     // A CPU adapter (SwiftShader) starts on the Low preset: no shadows or ambient occlusion.
-    const render = applyRenderOptions(options, renderer, { preset: gpu.software ? "low" : "medium", changed: () => loop.invalidate() });
+    const render = applyRenderOptions(options, renderer, { gpu, phone, preset: gpu.software ? "low" : "medium", changed: () => loop.invalidate() });
     await prepared(renderer.prepare());
     return { renderer, render };
   };
@@ -195,7 +200,7 @@ if (app) {
   const input = createInput(canvas, { loop: { invalidate: () => loop.invalidate() } });
   const orbit = makeOrbitController(input, { yaw: 20, pitch: 8, distance: 230, distanceLimits: [60, 500], pitchLimits: [2, 85], target: [C, 18, C], fovDeg: 45 });
   const loop = runLoop((now) => {
-    gpu.renderScale = view.render.fixedScale() || scale;
+    gpu.renderScale = view.render.pace(now, scale);
     resizeToDisplay(gpu);
     view.renderer.render({
       ...camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch()),

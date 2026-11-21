@@ -105,7 +105,8 @@ const options = defineOptions({
   renderScale: { ...RENDER_OPTIONS.renderScale, min: 0.1, default: 0.5, help: "The fixed fraction of the canvas that is rendered." },
   quality: { ...RENDER_OPTIONS.quality, default: "high", help: "The renderer's preset (maxSteps is 1024 in each)." },
   temporal: RENDER_OPTIONS.temporal,
-  upscale: RENDER_OPTIONS.upscale,
+  // A fixed fraction here, as everything the bench measures: no "0, adapt it" as on the other pages.
+  upscale: { ...RENDER_OPTIONS.upscale, min: 0.25, help: "With temporal accumulation on: trace at this fraction of the output size and resolve to it over frames." },
   reflections: RENDER_OPTIONS.reflections,
   debug: RENDER_OPTIONS.debug,
   anim: { kind: "toggle", label: "Wall-clock motion", help: "Move things by the clock instead of a fixed step per drawn frame.", default: false },

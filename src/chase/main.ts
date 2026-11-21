@@ -30,6 +30,8 @@
 //   ?wander=0            start with the rat standing still instead of wandering
 //   ?seed=               the scene's seed
 //   ?quality=, ?temporal=1, ?upscale=, ?reflections=0, ?renderScale=, ?debug=   the renderer's own
+//   ?perf, ?full                                 the frame rate (and a phone's traced fraction); a phone gets the phone
+//                                                profile (../shared/quality.ts), ?full the desktop settings
 //   ?e2e                 window.chaseStats() for the test tools
 
 import { chaseFrame, createRenderer, resizeToDisplay, type Vec3 } from "@voxolith/renderer";
@@ -46,6 +48,7 @@ import { boot, runLoop } from "../shared/boot";
 import { markFrames, nextFrame, prepared, reportLoadTimeline, step } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
 import { defineOptions, OPTION, RENDER_OPTIONS, seedOption } from "../shared/options";
+import { phoneProfile } from "../shared/scale";
 import { applyRenderOptions } from "../shared/quality";
 import { DAYLIGHT } from "../shared/env";
 
@@ -80,6 +83,8 @@ const app = await boot("chase", {
 });
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
+  // A phone (../shared/scale.ts) gets the phone profile: the renderer's through applyRenderOptions below.
+  const phone = phoneProfile(gpu, options);
   const rng = seededRandom(seed);
 
   // --- ground and scenery: something to move past ---------------------------------------------
@@ -111,7 +116,7 @@ if (app) {
   const renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   // A CPU adapter (SwiftShader) starts on the Low preset, and draws small.
-  const render = applyRenderOptions(options, renderer, { preset: gpu.software ? "low" : "medium" });
+  const render = applyRenderOptions(options, renderer, { gpu, phone, moving: true, preset: gpu.software ? "low" : "medium" });
   const scale = gpu.software ? Math.min(gpu.renderScale, 0.3) : gpu.renderScale;
   // The rat is an instance, placed by the first frame: say so, so the right pipelines compile.
   const compiled = prepared(renderer.prepare({ instances: true }));
@@ -146,7 +151,7 @@ if (app) {
   const free = (x: number, z: number) =>
     x > MARGIN && z > MARGIN && x < SIZE.x - MARGIN && z < SIZE.z - MARGIN && scenery.every((s) => Math.hypot(x - s.x, z - s.z) > s.r + 12);
   await compiled;
-  runLoop((_now, dtRaw) => {
+  runLoop((now, dtRaw) => {
     const dt = Math.min(0.05, dtRaw);
     input.update();
     let [steer, go] = actions.vector("steer", "go");
@@ -178,7 +183,7 @@ if (app) {
       distance: options.get("distance"), height: options.get("height"), lookAhead: options.get("lookAhead"), fovDeg: options.get("fov"),
     });
     crowd.update([me], view.camPos as Vec3);
-    gpu.renderScale = render.fixedScale() || scale;
+    gpu.renderScale = render.pace(now, scale);
     resizeToDisplay(gpu);
     renderer.render({ ...view, ...DAYLIGHT });
   }, true);

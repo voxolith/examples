@@ -7,9 +7,9 @@
 // they move. Compare the overlay's GPU memory with what stamping the same
 // forest would cost (?stamp stamps the trees instead).
 //
-// ?trees= (default 160), ?rats= (default 400), ?seed=, ?perf (the perf overlay, and the load
+// ?trees= (default 160, 80 on a phone), ?rats= (default 400, 120 on a phone), ?full (desktop settings on a phone), ?seed=, ?perf (the perf overlay, and the load
 // timeline in the console), ?e2e (test hooks), and the renderer's own as on every page:
-// ?quality=, ?temporal=1, ?reflections=0, ?renderScale=, ?debug= (not the traced fraction: ?upscale= is taken, below). The options are declared below, and the HUD's
+// ?quality=, ?temporal=1, ?reflections=0, ?renderScale=, ?debug= (not the traced fraction: ?upscale= is taken, below). A phone gets the phone profile (../shared/quality.ts), drawn smaller rather than upscaled since the crowd never stands still. The options are declared below, and the HUD's
 // Options panel changes them.
 //
 // ?upscale=k (an integer >= 2) is a renderer check, not a pattern to copy: every other tree is a
@@ -32,11 +32,12 @@ import { markFrames, prepared, reportLoadTimeline, step } from "../shared/loadin
 import { commitStatic, sceneWorker } from "../shared/placement";
 import { STEPS } from "../shared/loading-screen";
 import { defineOptions, OPTION, RENDER_OPTIONS, seedOption } from "../shared/options";
+import { phoneProfile } from "../shared/scale";
 import { applyRenderOptions } from "../shared/quality";
 
 const options = defineOptions({
-  trees: { kind: "number", label: "Trees", help: "How many trees are placed, from six models.", min: 0, max: 2000, step: 40, integer: true, default: 160 },
-  rats: { kind: "number", label: "Rats", help: "The size of the crowd.", min: 0, max: 3000, step: 100, integer: true, default: 400 },
+  trees: { kind: "number", label: "Trees", help: "How many trees are placed, from six models (80 on a phone).", min: 0, max: 2000, step: 40, integer: true, default: 160 },
+  rats: { kind: "number", label: "Rats", help: "The size of the crowd (120 on a phone).", min: 0, max: 3000, step: 100, integer: true, default: 400 },
   stamp: { kind: "toggle", label: "Stamp the trees", help: "Write the trees into the world's bricks instead of drawing them as instances, to compare the memory.", default: false },
   upscale: { kind: "number", label: "Upscaled copies", help: "A renderer check: every other tree is a copy k times coarser, drawn k times larger (2 or more; 0 for none).", min: 0, max: 16, step: 1, integer: true, default: 0 },
   seed: seedOption("instances"),
@@ -47,10 +48,10 @@ const options = defineOptions({
   renderScale: RENDER_OPTIONS.renderScale,
   debug: RENDER_OPTIONS.debug,
   perf: OPTION.perf,
+  full: OPTION.full,
+  phone: OPTION.phone,
   e2e: OPTION.e2e,
 });
-const TREE_COUNT = options.get("trees");
-const RAT_COUNT = options.get("rats");
 const STAMP = options.get("stamp");
 const UPSCALE = STAMP ? 0 : options.get("upscale");
 if (UPSCALE === 1) console.warn("[instances] ?upscale needs an integer >= 2; ignored");
@@ -78,6 +79,12 @@ const app = await boot("instances", {
 });
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
+  // A phone (../shared/scale.ts) gets half the trees and a smaller crowd: every instance a ray
+  // passes is sampled, and that is what a phone GPU is slowest at. The renderer's phone profile
+  // comes through applyRenderOptions below.
+  const phone = phoneProfile(gpu, options);
+  const TREE_COUNT = options.get("trees", phone ? 80 : 160);
+  const RAT_COUNT = options.get("rats", phone ? 120 : 400);
   const rng = seededRandom(seed);
   const terrain = await step(load, "terrain", () => generateTerrain({ width: SIZE.x, depth: SIZE.z, height: SIZE.y, baseY: 12, relief: 6, featureSize: 200, waterLevel: 7, river: { enabled: false, width: 0, depth: 0, banks: 0, meander: 100 } }, seed));
   const palette = new PaletteAllocator(1);
@@ -100,7 +107,7 @@ if (app) {
 
   const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
-  const render = applyRenderOptions(options, renderer, { preset: gpu.software ? "low" : "medium", changed: () => loop.invalidate() }, ["upscale"]);
+  const render = applyRenderOptions(options, renderer, { gpu, phone, moving: true, preset: gpu.software ? "low" : "medium", changed: () => loop.invalidate() }, ["upscale"]);
   // deferPipelines above: compile the pipelines the frames will use (instances: none is placed
   // yet) while the ground and the trees go in, and await them before the first frame.
   const compiled = prepared(renderer.prepare({ instances: !STAMP || RAT_COUNT > 0, ...(UPSCALED ? { scaled: true } : {}) }));
@@ -191,7 +198,7 @@ if (app) {
     target: [SIZE.x / 2, 20, SIZE.z / 2], pan: "secondary", panBounds: { minX: 0, maxX: SIZE.x, minZ: 0, maxZ: SIZE.z },
   });
   const frame = () => camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch());
-  const perf = makePerf({ enabled: options.get("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.4, retryAfterMs: Infinity });
+  const perf = makePerf({ enabled: options.get("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.4, retryAfterMs: Infinity, locked: render.adaptive() });
   const sky = atmosphereFrame(timeOfDay(0.42), ATMOSPHERES.clear);
   let last = performance.now();
   const acc = { frames: 0, ms: 0, t: performance.now() };
@@ -207,7 +214,7 @@ if (app) {
     acc.ms += performance.now() - t0;
     acc.frames++;
     perf.frame(now);
-    gpu.renderScale = render.fixedScale() || perf.scale();
+    gpu.renderScale = render.pace(now, perf.scale());
     resizeToDisplay(gpu);
     renderer.render({ ...f, ...sky, time: now / 1000 });
   }, true);

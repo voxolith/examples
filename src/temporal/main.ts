@@ -24,14 +24,15 @@
 //
 // URL options (declared below; the HUD's Options panel changes them, most of them at once, the
 // quality, the starting heading, the seed and ?full by reloading):
-//   ?temporal=1          open with temporal accumulation on (default off)
+//   ?temporal=1          open with temporal accumulation on (default off; on on a phone)
 //   ?rotate              open auto-rotating
 //   ?always              open redrawing every frame
-//   ?renderScale=0.5     fixed render scale, 0.1-1 (default 0.8; 0.5 on a phone, 0.3 on a CPU adapter)
+//   ?renderScale=0.5     fixed render scale, 0.1-1 (default 0.8; 0.6 on a phone, 0.3 on a CPU adapter)
 //   ?quality=medium      low | medium | high (default medium; low on a CPU adapter, where temporal has
 //                        nothing to accumulate, so pass ?quality=medium to exercise it there)
 //   ?upscale=0.5         with temporal on: trace at this fraction of the output and resolve to it
-//   ?reflections=0       compile the materials' secondary rays out
+//                        (default 1; 0.35 on a phone, fixed: this page does not adapt it)
+//   ?reflections=0       compile the materials' secondary rays out (the default on a phone)
 //   ?debug=10            the renderer's step heatmap (1: the walk without empty-space skipping)
 //   ?angle=0.02          the moon's angular radius in radians (soft shadow edges with temporal on)
 //   ?time=0.1            time of day, 0 midnight to 0.5 noon (default 0.1, night with the moon 34° up;
@@ -66,15 +67,17 @@ import { generateBuilding, PRESETS as BUILDINGS } from "@voxolith/gen-building";
 import { boot } from "../shared/boot";
 import { markFrames, nextFrame, prepared, reportLoadTimeline, step } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
-import { isPhone, phoneDevice } from "../shared/scale";
+import { phoneProfile } from "../shared/scale";
+import { PHONE } from "../shared/quality";
 import { defineOptions, OPTION, RENDER_OPTIONS, seedOption } from "../shared/options";
 
 const options = defineOptions({
   temporal: { ...RENDER_OPTIONS.temporal, help: "Keep shadows and AO per pixel across frames and stop tracing them once converged (T)." },
   rotate: { kind: "toggle", label: "Rotate", help: "Turn the camera, to read what a moving view costs.", default: false, live: true },
   always: { kind: "toggle", label: "Redraw always", help: "Draw every frame even when nothing changes, to read what a still frame costs.", default: false, live: true },
-  renderScale: { ...RENDER_OPTIONS.renderScale, min: 0.1, max: 1, default: 0.8, help: "The fixed fraction of the canvas that is rendered (0.5 on a phone, 0.3 on a CPU adapter)." },
-  upscale: RENDER_OPTIONS.upscale,
+  renderScale: { ...RENDER_OPTIONS.renderScale, min: 0.1, max: 1, default: 0.8, help: "The fixed fraction of the canvas that is rendered (0.6 on a phone, 0.3 on a CPU adapter)." },
+  // A fixed fraction, like the render scale: no "0, adapt it" as on the other pages, so the numbers compare.
+  upscale: { ...RENDER_OPTIONS.upscale, min: 0.25, help: "With temporal accumulation on: trace at this fraction of the output size and resolve to it over frames (0.35 on a phone)." },
   reflections: RENDER_OPTIONS.reflections,
   quality: { ...RENDER_OPTIONS.quality, live: false },
   debug: RENDER_OPTIONS.debug,
@@ -84,6 +87,7 @@ const options = defineOptions({
   yaw: { kind: "number", label: "Starting heading", help: "The camera's heading when the page opens, in degrees.", min: -360, max: 720, step: 15, default: 305 },
   seed: seedOption("temporal"),
   full: OPTION.full,
+  phone: OPTION.phone,
   show: { kind: "number", label: "Development view", help: "The renderer's own: 1 tiles traced, 2 samples per pixel.", min: 0, max: 9, step: 1, default: 0, hidden: true },
   e2e: OPTION.e2e,
 });
@@ -132,8 +136,11 @@ const app = await boot("temporal", {
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
   const t0 = performance.now();
-  if (!phoneDevice(gpu)) options.hide("full");
-  const phone = isPhone(gpu, options.get("full"));
+  // A phone (../shared/scale.ts) opens with the phone profile's settings (../shared/quality.ts
+  // PHONE): temporal on, reflections off, and a fixed traced fraction, its floor. Fixed, not
+  // adapted as on the other pages, so the off and on times this page shows stay comparable; with
+  // temporal off nothing is upscaled, and the full output is traced: that is the comparison.
+  const phone = phoneProfile(gpu, options) && !gpu.software;
   const rng = seededRandom(seed);
 
   // --- ground ------------------------------------------------------------------
@@ -188,12 +195,12 @@ if (app) {
   const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   const quality: QualityPreset = options.get("quality", gpu.software ? "low" : "medium");
-  let temporal = options.get("temporal");
-  renderer.setQuality({ ...QUALITY_PRESETS[quality], temporal, upscale: options.get("upscale"), reflections: options.get("reflections") });
+  let temporal = options.get("temporal", phone ? PHONE.temporal : false);
+  renderer.setQuality({ ...QUALITY_PRESETS[quality], temporal, upscale: options.get("upscale", phone ? PHONE.floor : 1), reflections: options.get("reflections", phone ? PHONE.reflections : true) });
   if (options.get("debug")) renderer.setDebug(options.get("debug"));
   // Temporal accumulates the shadows and AO; the Low preset has neither.
   const canAccumulate = QUALITY_PRESETS[quality].shadowSteps > 0 || QUALITY_PRESETS[quality].ao;
-  gpu.renderScale = Math.max(0.1, Math.min(1, options.get("renderScale", gpu.software ? 0.3 : phone ? 0.5 : gpu.renderScale)));
+  gpu.renderScale = Math.max(0.1, Math.min(1, options.get("renderScale", gpu.software ? 0.3 : phone ? PHONE.outputScale : gpu.renderScale)));
   // deferPipelines above: compile the pipelines of the mode the page opens in while the scene is
   // built, and await them before the first frame. The other mode's compile after the first picture.
   const compiled = prepared(renderer.prepare({ temporal }));
@@ -354,7 +361,7 @@ if (app) {
     readout.textContent =
       `${n ? `${fps.toFixed(0)} fps` : "idle"} · ${g === null ? "GPU timing unavailable" : `GPU ${ms(g)} ms`}\n` +
       (g === null ? "" : `last off ${ms(last.off)} · on ${ms(last.on)} ms\n`) +
-      `scale ${gpu.renderScale.toFixed(2)} · ${gpu.width}×${gpu.height} · ${state}`;
+      `scale ${gpu.renderScale.toFixed(2)} · ${gpu.width}×${gpu.height}${temporal && canAccumulate && renderer.getQuality().upscale < 1 ? ` · traced ${renderer.getQuality().upscale.toFixed(2)}` : ""} · ${state}`;
   };
   setInterval(tick, 250);
 

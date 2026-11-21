@@ -1,7 +1,11 @@
 // minecraft-region: drop a Minecraft Anvil region file (.mca) onto the page,
 // crop it into a voxel grid with buildMinecraftRegion, and fly through it with
 // a first-person camera. No region file is bundled; grab one from any world's
-// `region/` folder.
+// `region/` folder. A phone has nothing to drop: the HUD's "Open .mca" button picks the file.
+//
+// The page has no options of its own, only the ones every page shares (the HUD's Options panel):
+// the renderer's ?quality=, ?temporal=1, ?upscale=, ?reflections=0, ?renderScale=, ?debug=, and
+// ?perf. A phone gets the phone profile (../shared/quality.ts); ?full gives it the desktop settings.
 
 import { createRenderer, buildMinecraftRegion, firstPersonFrame, resizeToDisplay, type Renderer } from "@voxolith/renderer";
 import { axis, button, createInput, makeActions, makeLookController, makeTouchControls, prepareSurface } from "@voxolith/engine/input";
@@ -11,12 +15,20 @@ import { markFrames, prepared, reportLoadTimeline, step } from "../shared/loadin
 import { NO_SCREEN, showLoadingScreen, STEPS } from "../shared/loading-screen";
 import { classicSky } from "@voxolith/engine/atmosphere";
 import { DAYLIGHT } from "../shared/env";
+import { defineOptions, RENDER_OPTIONS } from "../shared/options";
+import { applyRenderOptions, type RenderControls } from "../shared/quality";
+import { phoneProfile } from "../shared/scale";
+
+const options = defineOptions({ ...RENDER_OPTIONS });
 
 // Nothing loads until a file is dropped, so no loading screen at the start: each drop opens one.
-const app = await boot("minecraft-region", { loading: false });
+const app = await boot("minecraft-region", { loading: false, options });
 if (app) {
   const { gpu, canvas, info } = app;
   let renderer: Renderer | null = null;
+  let render: RenderControls | null = null;
+  const phone = phoneProfile(gpu, options);
+  const scale = gpu.renderScale;
 
   // Free-fly controls, by action rather than by key, so the same loop works on
   // a keyboard, a gamepad and a phone. Keys are physical (`code`), so WASD
@@ -64,11 +76,13 @@ if (app) {
       const r = await createRenderer(gpu, {
         size: scene.size, data: scene.data, palette: scene.palette, materials: scene.materials,
       }, { onLoad: trackRenderer(tracker), deferPipelines: true, background: classicSky });
-      // A CPU adapter (SwiftShader) starts on the Low preset: no shadows or ambient occlusion.
-      if (gpu.software) r.setQuality("low");
+      // A CPU adapter (SwiftShader) starts on the Low preset: no shadows or ambient occlusion; a
+      // phone gets the phone profile. The quality comes from the page's options.
+      const controls = applyRenderOptions(options, r, { gpu, phone, preset: gpu.software ? "low" : "high" });
       // deferPipelines: compile before the loop draws it.
       await prepared(r.prepare());
       renderer = r;
+      render = controls;
       eye[0] = scene.size.x / 2; eye[1] = scene.size.y * 0.8; eye[2] = -10;
       look.set(0, -15);
       info.textContent = `${name} · ${scene.meta.chunks} chunks · ${scene.meta.voxels.toLocaleString()} voxels · click to look, WASD move, Space/C up/down, Shift fast`;
@@ -91,8 +105,25 @@ if (app) {
     const f = e.dataTransfer?.files?.[0];
     if (f) f.arrayBuffer().then((b) => load(b, f.name));
   });
+  // The same through a file picker: a touch screen cannot drop a file.
+  const picker = document.createElement("input");
+  picker.type = "file";
+  picker.accept = ".mca";
+  picker.hidden = true;
+  picker.addEventListener("change", () => {
+    const f = picker.files?.[0];
+    if (f) void f.arrayBuffer().then((b) => load(b, f.name));
+    picker.value = "";
+  });
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "time-toggle";
+  open.textContent = "Open .mca";
+  open.title = "Pick a Minecraft region file";
+  open.addEventListener("click", () => picker.click());
+  document.getElementById("theme-toggle")?.before(open, picker);
 
-  runLoop((_now, dt) => {
+  runLoop((now, dt) => {
     input.update();
     look.update(dt);
     const speed = (actions.down("fast") ? 120 : 40) * dt;
@@ -105,6 +136,7 @@ if (app) {
     eye[2] += (fwd[1] * wz + right[1] * sx) * speed;
     eye[1] += actions.value("rise") * speed;
 
+    if (render) gpu.renderScale = render.pace(now, scale);
     resizeToDisplay(gpu);
     renderer?.render({ ...firstPersonFrame(eye, look.yaw(), look.pitch(), 75), ...DAYLIGHT });
   });

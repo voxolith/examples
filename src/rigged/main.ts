@@ -13,7 +13,7 @@
 // a world at that scale, which at all of them is the smallest that keeps two-voxel legs (size
 // 0.7; a rat is only real size from about 84 voxels per metre), so those four look alike. ?yaw= turns them;
 // ?pairs= shows only the first few clips; ?distance= sets the camera distance; the renderer's own
-// knobs are here as on every page (?quality=, ?temporal=1, ?upscale=, ?reflections=0, ?renderScale=, ?debug=). The options are
+// knobs are here as on every page (?quality=, ?temporal=1, ?upscale=, ?reflections=0, ?renderScale=, ?debug=, and ?perf; a phone gets the phone profile of ../shared/quality.ts, drawn smaller rather than upscaled since everything here moves, and ?full the desktop settings). The options are
 // declared below, and the HUD's Options panel changes them.
 //
 // Posing on the GPU from a shared rest model follows Gruen, Benthin, Kern and McAllister, "Ray
@@ -33,7 +33,7 @@ import { markFrames, prepared, reportLoadTimeline, step } from "../shared/loadin
 import { STEPS } from "../shared/loading-screen";
 import { defineOptions, RENDER_OPTIONS } from "../shared/options";
 import { applyRenderOptions } from "../shared/quality";
-import { vpmOption } from "../shared/scale";
+import { phoneProfile, vpmOption } from "../shared/scale";
 
 const options = defineOptions({
   vpm: { ...vpmOption, default: 10, help: "The world scale the rat is sized for. 10: the stylised preset. 20 to 50: the smallest rat with two-voxel legs (atScale), the same at each." },
@@ -62,6 +62,8 @@ const app = await boot("rigged", {
 });
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
+  // A phone (../shared/scale.ts) gets the phone profile: the renderer's through applyRenderOptions below.
+  const phone = phoneProfile(gpu, options);
   const rat = await step(load, "creatures", () => generateCreature(vpm > 10 ? atScale(PRESETS.rat, vpm) : PRESETS.rat, seededRandom(11), "rat").entity);
   const clips = rat.clips!.map((c) => c.id).slice(0, options.get("pairs"));
 
@@ -77,7 +79,7 @@ if (app) {
   const ratBase = palette.allocate(rat.model.roles, "rat").base;
   const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
-  const render = applyRenderOptions(options, renderer, { preset: gpu.software ? "low" : "high", changed: () => loop.invalidate() });
+  const render = applyRenderOptions(options, renderer, { gpu, phone, moving: true, preset: gpu.software ? "low" : "high", changed: () => loop.invalidate() });
   // A software adapter (SwiftShader) takes seconds for a full-size frame of posed rats, and the
   // page redraws continuously: draw at under a third of the size, as valley and nightwood do.
   if (gpu.software) gpu.renderScale = Math.min(gpu.renderScale, 0.3);
@@ -128,7 +130,7 @@ if (app) {
     posed.update(right, cam);
     layer.setDynamic([...leftLayer.list, ...rightLayer.list]);
     layer.commit();
-    gpu.renderScale = render.fixedScale() || ownScale;
+    gpu.renderScale = render.pace(now, ownScale);
     resizeToDisplay(gpu);
     renderer.render({ ...f, ...sky, time: now / 1000 });
   }, true);

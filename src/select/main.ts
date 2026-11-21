@@ -23,6 +23,8 @@
 //   ?dig=12              the edge of the cube the dig tool clears, in voxels (2 to 32)
 //   ?seed=               the scene's seed
 //   ?quality=, ?temporal=1, ?upscale=, ?reflections=0, ?renderScale=, ?debug=   the renderer's own
+//   ?perf, ?full                                 the frame rate (and a phone's traced fraction); a phone gets the phone
+//                                                profile (../shared/quality.ts), ?full the desktop settings
 //   ?e2e                 window.selectStats() and window.selectAt(x, y) for the test tools
 
 import { createRenderer, makeCamera, makeRay, observeResize, resizeToDisplay, voxelRaycast, type DirtyBox } from "@voxolith/renderer";
@@ -38,6 +40,7 @@ import { boot, runLoop } from "../shared/boot";
 import { markFrames, nextFrame, prepared, reportLoadTimeline, step } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
 import { defineOptions, OPTION, RENDER_OPTIONS, seedOption } from "../shared/options";
+import { phoneProfile } from "../shared/scale";
 import { applyRenderOptions } from "../shared/quality";
 import { DAYLIGHT } from "../shared/env";
 
@@ -58,6 +61,8 @@ const app = await boot("select", {
 });
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
+  // A phone (../shared/scale.ts) gets the phone profile: the renderer's through applyRenderOptions below.
+  const phone = phoneProfile(gpu, options);
 
   // --- models: nine objects, generated on this thread --------------------------------------
   // Half-size trees: the presets stand 19 m tall, more than this garden needs.
@@ -121,7 +126,7 @@ if (app) {
 
   const renderer = await createRenderer(gpu, { ...world, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
   // A CPU adapter (SwiftShader) starts on the Low preset, and draws small.
-  const render = applyRenderOptions(options, renderer, { preset: gpu.software ? "low" : "medium", changed: () => loop.invalidate() });
+  const render = applyRenderOptions(options, renderer, { gpu, phone, preset: gpu.software ? "low" : "medium", changed: () => loop.invalidate() });
   const scale = gpu.software ? Math.min(gpu.renderScale, 0.3) : gpu.renderScale;
   await prepared(renderer.prepare());
 
@@ -135,8 +140,8 @@ if (app) {
     target, pan: "secondary", panBounds: { minX: 0, maxX: SIZE.x, minZ: 0, maxZ: SIZE.z },
   });
   const frame = () => camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch());
-  const loop = runLoop(() => {
-    gpu.renderScale = render.fixedScale() || scale;
+  const loop = runLoop((now) => {
+    gpu.renderScale = render.pace(now, scale);
     resizeToDisplay(gpu);
     renderer.render({ ...frame(), ...DAYLIGHT });
   }, false, () => renderer.converging());

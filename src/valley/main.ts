@@ -53,7 +53,9 @@
 //               the input tests).
 // A phone (a touch-only pointer, or storage bindings under 512 MiB) gets a
 // lighter profile: 20 voxels per metre, scale 2, one variant, a 16 m
-// radius, the Low preset and no coarse stage; every
+// radius, no coarse stage, and the renderer's phone profile
+// (../shared/quality.ts: Medium with temporal accumulation, no
+// reflections, the traced fraction adapted to the frame time); every
 // option above still applies on its own.
 // Drag the lamp (or double-tap), N for night, W for weather, as on the
 // world page.
@@ -97,7 +99,7 @@ import { terrainOffThread } from "../shared/terrain";
 import { commitStatic, sceneWorker } from "../shared/placement";
 import { STEPS, type LoadingStep } from "../shared/loading-screen";
 import { COARSE_STEPS, COARSE_VPM, coarseFactor, coarseOption, FINE_STEPS, stagedLoad, swapToFine } from "../shared/detail";
-import { isPhone, phoneDevice, voxelSize, vpmOption } from "../shared/scale";
+import { phoneProfile, voxelSize, vpmOption } from "../shared/scale";
 import { defineOptions, OPTION, RENDER_OPTIONS, seedOption } from "../shared/options";
 import { applyRenderOptions } from "../shared/quality";
 import { VALLEY_OPTIONS } from "../world/options";
@@ -163,11 +165,10 @@ if (app) {
   // the ground still streaming in the corner.
 
   // A phone gets a lighter valley: 5 cm voxels, a smaller map, one model per
-  // species and the Low preset. Told apart by a touch-only pointer or the
+  // species and the renderer's phone profile. Told apart by a touch-only pointer or the
   // small storage bindings mobile GPUs offer. ?full asks for the desktop
   // settings; every setting below can still be given on its own.
-  if (!phoneDevice(gpu)) options.hide("full");
-  const phone = isPhone(gpu, options.get("full"));
+  const phone = phoneProfile(gpu, options);
   // 50 voxels per metre (2 cm) by default, 20 (5 cm) on a phone. Changing it (?vpm=, in the Options
   // panel) reloads, since every model is generated for its scale.
   /** Voxels per metre here (10 to 50), and the factor over the world page's 10 (1 to 5). */
@@ -299,14 +300,14 @@ if (app) {
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
   // Rays cross thousands of voxels of air here; the 64-voxel skip keeps
   // that cheap, but the step caps have to allow for the canopy and the ground.
-  const render = applyRenderOptions(options, renderer, {
-    preset: gpu.software || phone ? "low" : "medium",
-    tweak: (preset) => ({ maxSteps: gpu.software || phone ? 768 : 2048, shadowSteps: preset === "low" ? 0 : 320 }),
+  const render = applyRenderOptions(options, renderer, { gpu, phone,
+    preset: gpu.software ? "low" : "medium",
+    tweak: (preset) => ({ maxSteps: gpu.software || phone ? 768 : 2048, shadowSteps: preset === "low" ? 0 : phone ? 128 : 320 }),
   });
   // A CPU adapter would take many seconds over the first full-size frame
   // before the scale controller reacts, so it starts small.
+  // (A phone's output scale is the phone profile's, set by applyRenderOptions.)
   if (gpu.software) gpu.renderScale = Math.min(gpu.renderScale, 0.3);
-  else if (phone) gpu.renderScale = Math.min(gpu.renderScale, 0.6);
   // Compile what the frames will use while the scenery is placed: instances (the scenery is not
   // placed yet, so say so), and instances posed on the GPU for ?rigged rats. Awaited before the
   // first frame.
@@ -476,7 +477,7 @@ if (app) {
     distance: (night0 ? 1800 : 2600) * cm,
   });
   const frame = () => camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch());
-  const perf = makePerf({ enabled: options.get("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.35, maxSampleMs: 4000, retryAfterMs: Infinity });
+  const perf = makePerf({ enabled: options.get("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.35, maxSampleMs: 4000, retryAfterMs: Infinity, locked: render.adaptive() });
 
   // --- time of day, weather, lamp (as on the world page) --------------------------------
   const TRANSITION_S = 2.5;
@@ -525,7 +526,7 @@ if (app) {
     if (crowd) crowd.update(members, f.camPos as [number, number, number]);
     else layer.commit();
     perf.frame(now);
-    gpu.renderScale = render.fixedScale() || perf.scale();
+    gpu.renderScale = render.pace(now, perf.scale());
     resizeToDisplay(gpu);
     if (spin) orbit.set({ yaw: orbit.yaw() + dt * 2.4 });
     if (phase < phaseTarget) phase = Math.min(phaseTarget, phase + dt * (0.5 / TRANSITION_S));

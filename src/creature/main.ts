@@ -14,7 +14,7 @@
 // engine only animates and stamps.
 //
 // URL options (declared below; the HUD's Options panel changes them): ?count= the rats (1-40,
-// default 8), ?seed=, the renderer's own as on every page (?quality=, ?temporal=1, ?upscale=, ?reflections=0, ?renderScale=, ?debug=),
+// default 8), ?seed=, the renderer's own as on every page (?quality=, ?temporal=1, ?upscale=, ?reflections=0, ?renderScale=, ?debug=; a phone gets the phone profile of ../shared/quality.ts, ?full the desktop settings),
 // ?perf (the overlay, and the load timeline in the console), ?e2e (hooks for the input tests).
 
 import {
@@ -53,6 +53,7 @@ import { boot, runLoop } from "../shared/boot";
 import { markFrames, prepared, reportLoadTimeline, step } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
 import { defineOptions, OPTION, RENDER_OPTIONS, seedOption } from "../shared/options";
+import { phoneProfile } from "../shared/scale";
 import { applyRenderOptions } from "../shared/quality";
 
 const options = defineOptions({
@@ -84,6 +85,8 @@ const app = await boot("creature", {
 });
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
+  // A phone (../shared/scale.ts) gets the phone profile: the renderer's through applyRenderOptions below.
+  const phone = phoneProfile(gpu, options);
   const rng = seededRandom(seed);
 
   // --- ground ---------------------------------------------------------------
@@ -98,7 +101,7 @@ if (app) {
 
   const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
-  const render = applyRenderOptions(options, renderer, { preset: gpu.software ? "low" : "medium", changed: () => loop.invalidate() });
+  const render = applyRenderOptions(options, renderer, { gpu, phone, preset: gpu.software ? "low" : "medium", changed: () => loop.invalidate() });
   // deferPipelines above: compile while the ground goes in (the rats are stamped, so no instance
   // variants), and await it before the first frame.
   const compiled = prepared(renderer.prepare({ instances: false }));
@@ -316,7 +319,7 @@ if (app) {
   };
 
   // --- loop ------------------------------------------------------------------------
-  const perf = makePerf({ enabled: options.get("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.4, retryAfterMs: Infinity });
+  const perf = makePerf({ enabled: options.get("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.4, retryAfterMs: Infinity, locked: render.adaptive() });
   const sky = atmosphereFrame(timeOfDay(0.42), ATMOSPHERES.clear);
   let last = performance.now(), stats = { bricks: 0, voxels: 0 };
   await compiled;
@@ -368,7 +371,7 @@ if (app) {
     stats = stamper.commit();
 
     perf.frame(now);
-    gpu.renderScale = render.fixedScale() || perf.scale();
+    gpu.renderScale = render.pace(now, perf.scale());
     resizeToDisplay(gpu);
     renderer.render({ ...frame(), ...sky, time: now / 1000 });
   }, true);

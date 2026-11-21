@@ -1,8 +1,10 @@
-// The voxel scale of the pages that have one (valley, nightwood, bench, rigged): which device
-// gets which voxels per metre. ?vpm= itself is a declared option of each page
-// (./options.ts), whose default the page picks with `isPhone`.
+// Which device gets which settings: the phone test every page uses (`phoneProfile`), and the
+// voxel scale of the pages that have one (valley, nightwood, bench, rigged). ?vpm= itself is a
+// declared option of each page (./options.ts), whose default the page picks with its `phone` flag.
+// What the phone profile does to the renderer is in ./quality.ts (`PHONE`, `applyRenderOptions`).
 
 import type { GpuContext } from "@voxolith/renderer";
+import type { OPTION, PageOptions } from "./options";
 
 /**
  * The scales every page with a `?vpm=` offers, in voxels per metre: 10 (the generators' native
@@ -26,12 +28,26 @@ export function phoneDevice(gpu: GpuContext): boolean {
 }
 
 /**
- * Whether to give this device the phone profile: a {@link phoneDevice},
- * unless `full` (the page's `?full` option) asks for the desktop settings
- * anyway.
+ * Whether this page load gets the phone profile, from the page's options: a {@link phoneDevice}
+ * (or any device with the hidden `?phone`), unless `?full` asks for the desktop settings. Where
+ * the device is no phone, `?full` means nothing and leaves the Options panel.
+ *
+ * Every page calls it once after `boot` and uses the answer twice: for its own content (fewer
+ * voxels per metre, a smaller crowd), as the device default of each `options.get`, and for the
+ * renderer, by handing it to `applyRenderOptions` (./quality.ts).
+ *
+ * @example
+ * ```ts
+ * const phone = phoneProfile(gpu, options);
+ * const COUNT = options.get("count", phone ? 120 : 300);
+ * const render = applyRenderOptions(options, renderer, { gpu, phone, preset: gpu.software ? "low" : "medium" });
+ * ```
  */
-export function isPhone(gpu: GpuContext, full: boolean): boolean {
-  return !full && phoneDevice(gpu);
+export function phoneProfile(gpu: GpuContext, options: PageOptions<any>): boolean {
+  const o = options as unknown as PageOptions<Pick<typeof OPTION, "full" | "phone">>;
+  const device = (o.given("phone") && o.get("phone") !== "0") || phoneDevice(gpu);
+  if (!device) o.hide("full");
+  return device && !o.get("full");
 }
 
 /**

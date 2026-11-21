@@ -7,12 +7,13 @@
 // only the bricks whose rats changed are touched and uploaded.
 //
 // Move the cursor over the field (or tap) and the rats near it scatter.
-// ?count= sets how many (default 300, up to 2000). The overlay shows what it
+// ?count= sets how many (default 300, 120 on a phone, up to 2000). The overlay shows what it
 // costs. ?instances draws the baked poses as instances instead of stamping
 // them; ?rigged poses the rats on the GPU from one rest model per variant (no
 // baking at all; see the engine's makeCrowd `rigged` option). Also ?seed=, ?perf
 // (the perf overlay, and the load timeline in the console) and ?e2e (test hooks).
 // The renderer's own knobs are here as on every page: ?quality=, ?temporal=1, ?upscale=, ?reflections=0, ?renderScale=, ?debug=.
+// A phone gets the phone profile (../shared/quality.ts: fewer rays traced, resolved to the output over frames); ?full gives it the desktop settings.
 // The options are declared below, and the HUD's Options panel changes them.
 
 import { createRenderer, makeCamera, makePerf, makeRay, observeResize, resizeToDisplay, type Renderer } from "@voxolith/renderer";
@@ -27,10 +28,11 @@ import { boot, runLoop } from "../shared/boot";
 import { markFrames, prepared, reportLoadTimeline, step } from "../shared/loading";
 import { STEPS } from "../shared/loading-screen";
 import { defineOptions, OPTION, RENDER_OPTIONS, seedOption } from "../shared/options";
+import { phoneProfile } from "../shared/scale";
 import { applyRenderOptions } from "../shared/quality";
 
 const options = defineOptions({
-  count: { kind: "number", label: "Rats", help: "The size of the crowd.", min: 1, max: 2000, step: 50, integer: true, default: 300 },
+  count: { kind: "number", label: "Rats", help: "The size of the crowd (120 on a phone).", min: 1, max: 2000, step: 50, integer: true, default: 300 },
   instances: { kind: "toggle", label: "Draw as instances", help: "Draw the baked poses as instances instead of stamping them into the world.", default: false },
   rigged: { kind: "toggle", label: "Pose on the GPU", help: "One rest model per variant, posed by the renderer: no baking at all. Wins over instances.", default: false },
   seed: seedOption("swarm"),
@@ -38,7 +40,6 @@ const options = defineOptions({
   perf: OPTION.perf,
   e2e: OPTION.e2e,
 });
-const COUNT = options.get("count");
 const SIZE = { x: 640, y: 72, z: 640 };
 const seed = hashSeed(options.get("seed"));
 
@@ -58,6 +59,10 @@ const app = await boot("swarm", {
 });
 if (app) {
   const { gpu, canvas, info, load, screen } = app;
+  // A phone (../shared/scale.ts) gets a smaller crowd, and the renderer's phone profile through
+  // applyRenderOptions below.
+  const phone = phoneProfile(gpu, options);
+  const COUNT = options.get("count", phone ? 120 : 300);
   const rng = seededRandom(seed);
 
   // A broad, gentle meadow with a few ponds.
@@ -71,7 +76,7 @@ if (app) {
   const mode = options.get("rigged") ? "rigged" : options.get("instances") ? "instances" : "stamped";
   const renderer: Renderer = await createRenderer(gpu, { size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials() }, { onLoad: trackRenderer(load), deferPipelines: true, background: classicSky });
   renderer.setClipBounds([0, 0, 0], [SIZE.x - 1, SIZE.y - 1, SIZE.z - 1]);
-  const render = applyRenderOptions(options, renderer, { preset: gpu.software ? "low" : "medium", changed: () => loop.invalidate() });
+  const render = applyRenderOptions(options, renderer, { gpu, phone, preset: gpu.software ? "low" : "medium", changed: () => loop.invalidate() });
   // deferPipelines above: compile what the crowd mode draws (below) while the ground goes in, and
   // await it before the first frame.
   const compiled = prepared(renderer.prepare({ instances: mode !== "stamped", parts: mode === "rigged" }));
@@ -152,7 +157,7 @@ if (app) {
   };
 
   // --- loop and overlay ------------------------------------------------------------
-  const perf = makePerf({ enabled: options.get("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.4, retryAfterMs: Infinity });
+  const perf = makePerf({ enabled: options.get("perf"), scale: gpu.renderScale, minScale: gpu.software ? 0.25 : 0.4, retryAfterMs: Infinity, locked: render.adaptive() });
   const sky = atmosphereFrame(timeOfDay(0.45), ATMOSPHERES.clear);
   let last = performance.now();
   const acc = { frames: 0, ms: 0, bakes: 0, bricks: 0, hits: 0, misses: 0, fpsT: performance.now() };
@@ -170,7 +175,7 @@ if (app) {
     acc.bakes += stats.bakes;
     acc.bricks += stats.bricks;
     perf.frame(now);
-    gpu.renderScale = render.fixedScale() || perf.scale();
+    gpu.renderScale = render.pace(now, perf.scale());
     resizeToDisplay(gpu);
     renderer.render({ ...f, ...sky, time: now / 1000 });
   }, true);

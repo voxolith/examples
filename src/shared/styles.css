@@ -239,3 +239,19 @@ body.page h1 {
   .options input[type="checkbox"] { width: 24px; height: 24px; margin: 10px; }
   #hud .options-toggle { min-height: 32px; }
 }
+
+/* The phone profile's readout under ?perf (src/shared/quality.ts): the frame rate and the traced
+   fraction, the last line of the HUD's bar. */
+#hud .pace { flex: none; order: 10; font: 11px/1.4 ui-monospace, monospace; color: var(--text-muted); white-space: nowrap; }
+@media (max-width: 720px) {
+  #hud .pace { flex: 1 1 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+}
+/* makePerf's overlay (the renderer's, styled inline: one unbroken line per row) on a narrow
+   screen: wrap instead of running off the left edge. */
+@media (max-width: 720px) {
+  .perf { max-width: calc(100% - 16px); box-sizing: border-box; white-space: pre-wrap !important; overflow-wrap: anywhere; }
+}
+/* A page's own readout (temporal) wraps on a narrow screen instead of running off its panel. */
+@media (max-width: 720px) {
+  #hud .readout { white-space: pre-wrap; }
+}
