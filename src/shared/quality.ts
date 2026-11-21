@@ -189,8 +189,9 @@ export interface RenderSetup {
    * The page's subject moves all the time (an animated creature, a crowd, a chase camera). Where
    * the frame time is adapted to, the page is then drawn smaller as a whole instead of traced
    * smaller and resolved to a fixed output: the resolve builds its sharpness from frames in which
-   * a surface stays put, and what moves under it smears (looked at side by side: a walking rat is
-   * a blur at a traced fraction of 0.5 and crisp at the same number of rays drawn plainly).
+   * a surface stays put, and what moves is shown at the traced size anyway (the resolve starts
+   * it over each frame rather than trail it), so the same number of rays drawn plainly is as
+   * sharp and skips the resolve.
    */
   moving?: boolean;
   /** Called after a live change, to redraw (and restart whatever the page measures). */
